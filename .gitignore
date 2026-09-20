@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.venv/
+.venvs/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+uv.lock
+# working notes for agents: the one copy, kept out of git as in haversack (CLAUDE.md imports it
+# and sits in .git/info/exclude)
+AGENTS.md
+# anything derived from an encoder's weights inherits their license and is large: heads, token
+# fields and vectors live under ~/.cache/feldglas (or $FELDGLAS_CACHE), never here
+*.npz
+*.npy
+*.pt
+*.pth

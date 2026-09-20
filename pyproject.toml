@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "feldglas"
+version = "0.0.1"
+description = "feldglas: an instrument for looking at the embedding fields of medical images - the encoder contract, gates, pooling heads, a model of the unremarkable, and the suite that characterizes an encoder"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+# rankfield for ONE thing so far, its Geometry: a token lattice is a field in the family's own
+# form (duckn's, which is NRRD's), so a read-out on it can go through the family's restore
+# without a second, drifting description of where an array sits in the world.
+dependencies = ["numpy>=1.24", "rankfield>=0.3"]
+
+[project.optional-dependencies]
+suite = ["scipy>=1.11"]          # distance transforms (gateability); nothing in the core needs it
+radar = ["torch>=2.7"]           # ONLY to read upstream's text-embedding table (.pt); the head is numpy
+modal = ["modal>=1.0"]           # tools/radar_export_modal.py - the one GPU step, encode -> field
+test = ["pytest>=8", "scipy>=1.11", "scikit-learn>=1.4"]
+
+[tool.uv.sources]
+rankfield = { git = "https://github.com/mhalle/rankfield.git", tag = "v0.3.2" }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/feldglas"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
