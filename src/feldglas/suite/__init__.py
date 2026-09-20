@@ -67,8 +67,8 @@ PROBES = (
     Probe("noise_curve", "at what injected noise does a region move as far as another patient's?", "intervention", "planned",
           "EXPLORATION WP1, with and without an anti-aliased resample"),
     # -- the unremarkable -----------------------------------------------------------------
-    Probe("normal_atlas", "does a normal model from healthy people find the remarkable elsewhere?", "labels", "medseg",
-          "radar_donor_atlas.py, radar_observer.py part A -> donor_atlas.json (0.909 pooled vs 0.816), observer.json"),
+    Probe("normal_atlas", "does a normal model from healthy people find the remarkable elsewhere?", "labels", "here",
+          "feldglas.suite.normal_atlas"),
     # -- variants (EXPLORATION section 12): an axis of the suite, for every encoder --------
     Probe("mirror", "does any layer notice an exact situs inversus (voxels flipped, header kept)?", "intervention", "planned", "V1"),
     Probe("accessory_spleen", "a blob of the patient's own spleen painted into fat: ranks, identity, self-match", "intervention", "planned", "V2"),
