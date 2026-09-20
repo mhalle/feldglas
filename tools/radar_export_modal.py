@@ -23,6 +23,20 @@ the Modal volumes of the RADAR study (``radar-idc-validation`` holds the CTs as 
 
 Run:  uv run --extra modal modal run tools/radar_export_modal.py --collection colorectal_liver_metastases --limit 4
       uv run --extra modal modal run tools/radar_export_modal.py --uuids <uuid>,<uuid>
+
+TO THE OBJECT STORE (``--store s3://bucket/feldglas``). A cohort is hundreds of 24-37 MB fields
+and must not travel through a laptop, so with ``--store`` the GPU worker hands its arrays to a
+small CPU worker (Python 3.12, where feldglas and rankfield install - RADAR's own image is
+3.10), which writes the field and puts it into provender's blobs under ``<store>/radar/``. Only
+``{digest, size}`` comes back, into the MANIFEST (``manifests/radar.json``, tracked in git),
+which is the one map from a series to its blob. The CPU worker reads the store's credentials
+from the Modal secret ``$FELDGLAS_MODAL_SECRET`` (default ``feldglas-r2``: AWS_ACCESS_KEY_ID,
+AWS_SECRET_ACCESS_KEY, AWS_ENDPOINT, AWS_REGION=auto) - attached ONLY when ``--store`` names a
+real bucket, so every other run works without the secret existing. ``--store memory://x``
+exercises the whole path (image, field writer, blob put) with no bucket and no credentials;
+what it stores dies with the container, so nothing is written to the manifest.
+
+      FELDGLAS_STORE=s3://<bucket>/feldglas uv run --extra modal modal run tools/radar_export_modal.py --limit 4 --store env
 """
 import csv, io, json, os, pathlib, sys, time
 
@@ -45,9 +59,47 @@ image = (modal.Image.debian_slim(python_version="3.10")
                       "idc-index", "highdicom>=0.23", "pydicom>=3", "pylibjpeg", "pylibjpeg-libjpeg")
          .add_local_dir(REPO / "RADAR_inference", "/radar/RADAR_inference")
          .add_local_dir(REPO / "ckpt", "/radar/ckpt"))
+# Whether the store's secret is attached is decided ONCE, on the laptop, and BAKED INTO THE
+# IMAGE's environment, so a container re-importing this file decides the same way. The first
+# version read the variable on the laptop only and reasoned that a container's empty list was
+# harmless: Modal checks a function's dependencies against the ones it was defined with, found
+# 1 where the laptop had declared 2, and crash-looped the worker with the GPU containers still
+# attached (2026-09-20). A Modal object under a conditional must evaluate alike on both sides.
+_STORE = os.environ.get("FELDGLAS_STORE", "")
+_SECRET = os.environ.get("FELDGLAS_MODAL_SECRET", "feldglas-r2")
+_SECRETS = [modal.Secret.from_name(_SECRET)] if _STORE.startswith(("s3://", "gs://", "az://")) else []
+# the finishing worker: where a field is WRITTEN and stored. feldglas is mounted from this
+# checkout; rankfield and provender come from the same tags pyproject pins.
+finish_image = (modal.Image.debian_slim(python_version="3.12").apt_install("git")
+                .pip_install("numpy>=1.24", "obstore>=0.11",
+                             "rankfield @ git+https://github.com/mhalle/rankfield.git@v0.3.2",
+                             "provender @ git+https://github.com/mhalle/provender.git@v0.1.1")
+                .env({"FELDGLAS_STORE": _STORE, "FELDGLAS_MODAL_SECRET": _SECRET})
+                .add_local_python_source("feldglas"))
 vol = modal.Volume.from_name("radar-idc-validation")
 rweights = modal.Volume.from_name("radar-probe-weights")
 app = modal.App("feldglas-radar-export")
+
+
+@app.function(image=finish_image, secrets=_SECRETS, memory=4096, timeout=900, max_containers=12)
+def finish(raw: bytes, store_url: str) -> str:
+    """Raw export -> a field file -> provender's blobs. Returns ``{name, digest, size, provenance}``."""
+    import tempfile
+    import numpy as np
+    from feldglas.adapters import radar
+    from feldglas.remote import open_blobs
+    from feldglas.store import read_meta, write_field
+    z = np.load(io.BytesIO(raw))
+    meta = json.loads(str(z["meta"]))
+    field = radar.field_from_export({k: z[k] for k in z.files if k != "meta"}, meta)
+    with tempfile.TemporaryDirectory() as d:
+        p = write_field(pathlib.Path(d) / f"{meta['u']}.npz", field)
+        blobs = open_blobs(radar.NAME, store_url)
+        blob = blobs.put_file(p)
+        assert blobs.has(blob["digest"])
+        return json.dumps({"name": p.name, **blob, "provenance": read_meta(p)["provenance"],
+                           "tokens": int(field.offsets[-1]), "encode_s": meta["encode_s"],
+                           "prep_max_abs_vs_upstream": meta["prep_max_abs_vs_upstream"]})
 
 
 @app.cls(image=image, gpu="L40S", volumes={"/vol": vol, "/weights": rweights}, memory=65536,
@@ -75,7 +127,7 @@ class Export:
         return buf.getvalue()
 
     @modal.method()
-    def field(self, u: str) -> bytes:
+    def field(self, u: str, store_url: str = "") -> bytes:
         import shutil, tempfile
         import nibabel as nib, numpy as np, torch, torch.nn.functional as F
         from nibabel.orientations import io_orientation, axcodes2ornt, ornt_transform
@@ -148,18 +200,27 @@ class Export:
         finally:
             shutil.rmtree(work, ignore_errors=True)
         buf = io.BytesIO()
+        if store_url and not meta.get("err"):
+            np.savez(buf, meta=np.array(json.dumps(meta)), **arrays)     # uncompressed: it goes one hop, inside Modal
+            return finish.remote(buf.getvalue(), store_url).encode()      # a small JSON record, not the field
         np.savez_compressed(buf, meta=np.array(json.dumps(meta)), **arrays)
         return buf.getvalue()
 
 
 @app.local_entrypoint()
-def main(uuids: str = "", collection: str = "", phase: str = "", limit: int = 4, choice: str = ""):
+def main(uuids: str = "", collection: str = "", phase: str = "", limit: int = 4, choice: str = "",
+         store: str = "", manifest: str = ""):
     import numpy as np
-    from rankfield.geometry import Geometry
-    from feldglas import Field
     from feldglas.adapters import radar
     from feldglas.paths import encoder_dir
+    from feldglas.remote import Manifest
     from feldglas.store import write_field
+
+    store = _STORE if store == "env" else store
+    if store.startswith(("s3://", "gs://", "az://")) and store != _STORE:
+        raise SystemExit(f"--store {store} needs its credentials attached when the app is DEFINED: run with "
+                         f"FELDGLAS_STORE={store} in the environment and pass --store env")
+    mf = Manifest.load(manifest or HERE.parent / "manifests" / f"{radar.NAME}.json") if store else None
 
     if uuids:
         jobs = [u.strip() for u in uuids.split(",") if u.strip()]
@@ -173,25 +234,26 @@ def main(uuids: str = "", collection: str = "", phase: str = "", limit: int = 4,
     (out / "head.npz").write_bytes(ex.head.remote())
     print(f"head -> {out / 'head.npz'}")
     t = time.time()
-    for u, blob in zip(jobs, ex.field.map(jobs, return_exceptions=True)):
+    for u, blob in zip(jobs, ex.field.starmap([(u, store) for u in jobs], return_exceptions=True)):
         if not isinstance(blob, (bytes, bytearray)):
             print(f"  {u}: {blob!r}"[:200]); continue
         if blob[:1] == b"{":
-            print(f"  {u}: {blob.decode()[:200]}"); continue
+            rec = json.loads(blob.decode())
+            if "digest" not in rec:
+                print(f"  {u}: {blob.decode()[:200]}"); continue
+            if not store.startswith("memory://"):            # a memory store died with its container
+                mf.add(rec["name"], rec, rec["provenance"])
+            print(f"  {u}: {rec['tokens']} tokens -> {rec['digest'][:19]}... {rec['size'] / 1e6:.1f} MB, encode "
+                  f"{rec['encode_s']} s, preprocessing vs upstream {rec['prep_max_abs_vs_upstream']:.1e}")
+            continue
         z = np.load(io.BytesIO(blob))
         meta = json.loads(str(z["meta"]))
         if meta.get("err"):
             print(f"  {u}: {meta['err']}\n{meta.get('trace', '')}"); continue
-        g = meta["grid"]
-        field = Field(tokens=[z[f"tokens{j}"] for j in range(3)], kernels=radar.KERNELS,
-                      grid=Geometry(shape=tuple(g["shape"]), directions=tuple(tuple(r) for r in g["directions"]),
-                                    origin=tuple(g["origin"])),
-                      provenance=radar.provenance(source=u, crop=meta["crop"], resample_target=meta["resample_target"],
-                                                  image_shape=meta["image_shape"], image_affine_ras=meta["image_affine_ras"],
-                                                  prep_max_abs_vs_upstream=meta["prep_max_abs_vs_upstream"],
-                                                  encode_s=meta["encode_s"]),
-                      native_mask=z["native_mask"], native_labels=radar.ORGANS)
+        field = radar.field_from_export({k: z[k] for k in z.files if k != "meta"}, meta)
         p = write_field(out / "fields" / f"{u}.npz", field)
         print(f"  {u}: {int(field.offsets[-1])} tokens, {p.stat().st_size / 1e6:.1f} MB, encode {meta['encode_s']} s, "
               f"preprocessing vs upstream {meta['prep_max_abs_vs_upstream']:.1e}")
-    print(f"{len(jobs)} series in {time.time() - t:.0f} s -> {out / 'fields'}")
+    if mf is not None and mf.files and not store.startswith("memory://"):
+        print(f"manifest -> {mf.save()}  ({len(mf.files)} fields; commit it - it is the only map to these blobs)")
+    print(f"{len(jobs)} series in {time.time() - t:.0f} s -> {store or out / 'fields'}")

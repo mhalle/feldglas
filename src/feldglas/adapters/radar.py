@@ -152,6 +152,22 @@ def provenance(source: str = "", **extra) -> Provenance:
                       license=LICENSE, source=source, extra=extra)
 
 
+def field_from_export(arrays, meta: dict) -> Field:
+    """The ``Field`` for what ``tools/radar_export_modal.py``'s GPU worker hands back: three
+    token arrays, RADAR's own mask, and a ``meta`` holding the model grid (rankfield's form) and
+    how the scan got there. ONE function, because two places build a field from it - the
+    laptop, and the CPU worker that writes a field straight to the object store - and the
+    format must not have two authors."""
+    g = meta["grid"]
+    extra = {k: meta[k] for k in ("crop", "resample_target", "image_shape", "image_affine_ras",
+                                  "prep_max_abs_vs_upstream", "encode_s") if k in meta}
+    return Field(tokens=[arrays[f"tokens{j}"] for j in range(len(KERNELS))], kernels=KERNELS,
+                 grid=Geometry(shape=tuple(g["shape"]), directions=tuple(tuple(row) for row in g["directions"]),
+                               origin=tuple(g["origin"])),
+                 provenance=provenance(source=meta["u"], **extra),
+                 native_mask=arrays["native_mask"], native_labels=ORGANS)
+
+
 def read_pilot_field(path) -> Field:
     """A token field from the 2026-09-20 pilot (medseg's radar_instrument_modal.py), written
     before the exporter recorded its crop and resample: the grid has the right shape and spacing

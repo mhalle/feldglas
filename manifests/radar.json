@@ -1,0 +1,36 @@
+{
+ "body": {
+  "members": [
+   "1f63d54b-38a1-4c8b-9975-0012aba80e57.npz",
+   "7e1b9aa1-be25-41ee-b40f-8ffa8e39bb03.npz",
+   "a192c6ca-69b0-4195-bfa5-4fe9962b2da6.npz",
+   "cfe8bfbd-fc51-45ba-a62a-b556ebf3d270.npz"
+  ],
+  "provenance": {
+   "code": "damo-radar 9319f36",
+   "encoder": "radar",
+   "license": "CC-BY-NC-SA-4.0",
+   "preprocessing": "radar-prep 0.1 (upstream's, on the GPU)",
+   "weights": "checkpoint_radar_pretrain.pth (HF radar-generalist/RADAR)"
+  }
+ },
+ "files": {
+  "1f63d54b-38a1-4c8b-9975-0012aba80e57.npz": {
+   "digest": "sha256:81616d0f79e0d96b780757ba846789726a204d65ff52c79bcd4e7486982f371f",
+   "size": 36476326
+  },
+  "7e1b9aa1-be25-41ee-b40f-8ffa8e39bb03.npz": {
+   "digest": "sha256:b69399163f601787e742520558d4c90dde50bf494053bd4d222fb4553c169891",
+   "size": 23965375
+  },
+  "a192c6ca-69b0-4195-bfa5-4fe9962b2da6.npz": {
+   "digest": "sha256:43f67e6ca16f697452407ae644b72dcba98ec81e0f5cc5232c4857412f88304a",
+   "size": 22778313
+  },
+  "cfe8bfbd-fc51-45ba-a62a-b556ebf3d270.npz": {
+   "digest": "sha256:a5018e0560da3454e1907866349139bcbb84be8595daf9beb28db4b92c87c1bd",
+   "size": 24184707
+  }
+ },
+ "format": 1
+}

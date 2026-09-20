@@ -5,10 +5,10 @@ import subprocess, sys, unittest
 
 
 class LightImport(unittest.TestCase):
-    def test_import_pulls_no_torch_scipy_or_modal(self):
+    def test_import_pulls_no_torch_scipy_modal_or_store_client(self):
         code = ("import sys, feldglas, feldglas.gate, feldglas.store, feldglas.observe, feldglas.heads, "
-                "feldglas.suite, feldglas.adapters.radar, feldglas.adapters.null\n"
-                "bad = [m for m in ('torch', 'scipy', 'modal', 'sklearn', 'zarr') if m in sys.modules]\n"
+                "feldglas.suite, feldglas.adapters.radar, feldglas.adapters.null, feldglas.remote\n"
+                "bad = [m for m in ('torch', 'scipy', 'modal', 'sklearn', 'zarr', 'obstore', 'provender') if m in sys.modules]\n"
                 "assert not bad, bad")
         r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)

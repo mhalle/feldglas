@@ -17,10 +17,15 @@ dependencies = ["numpy>=1.24", "rankfield>=0.3"]
 suite = ["scipy>=1.11"]          # distance transforms (gateability); nothing in the core needs it
 radar = ["torch>=2.7"]           # ONLY to read upstream's text-embedding table (.pt); the head is numpy
 modal = ["modal>=1.0"]           # tools/radar_export_modal.py - the one GPU step, encode -> field
-test = ["pytest>=8", "scipy>=1.11", "scikit-learn>=1.4"]
+# fields on a shared object store (R2): provender owns the blobs - content-addressed, written
+# once, verified on fetch - and feldglas.remote owns only the manifest that names them. An
+# extra, because a viewer pooling gates from local fields needs no store client at all.
+remote = ["provender>=0.1.1"]
+test = ["pytest>=8", "scipy>=1.11", "scikit-learn>=1.4", "provender>=0.1.1"]
 
 [tool.uv.sources]
 rankfield = { git = "https://github.com/mhalle/rankfield.git", tag = "v0.3.2" }
+provender = { git = "https://github.com/mhalle/provender.git", tag = "v0.1.1" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/feldglas"]

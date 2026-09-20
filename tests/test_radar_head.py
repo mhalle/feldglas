@@ -115,3 +115,18 @@ class Weights(unittest.TestCase):
         one = np.zeros(30, np.float32); one[7] = 1.0
         np.testing.assert_allclose(head.pool(prepared, idx, "liver", weights=one),
                                    head.pool(prepared, idx[7:8], "liver"), atol=1e-6)
+
+
+class FromExport(unittest.TestCase):
+    def test_one_function_builds_the_field_the_tool_and_the_store_worker_both_write(self):
+        shape = (8, 32, 32)
+        arrays = {f"tokens{j}": np.zeros((int(np.prod([s // k for s, k in zip(shape, kk)])), 256), np.float16)
+                  for j, kk in enumerate(radar.KERNELS)}
+        arrays["native_mask"] = np.zeros(shape, np.uint8)
+        meta = {"u": "series-x", "grid": {"shape": list(shape), "directions": [[0, 0, 5.0], [0, -1.0, 0], [1.0, 0, 0]],
+                                          "origin": [1.0, 2.0, 3.0]},
+                "crop": {"lo": [0, 0, 0], "hi": [8, 32, 32]}, "encode_s": 0.2, "prep_max_abs_vs_upstream": 0.0}
+        f = radar.field_from_export(arrays, meta)
+        self.assertEqual(f.provenance.source, "series-x"); self.assertEqual(f.provenance.license, "CC-BY-NC-SA-4.0")
+        self.assertEqual(f.provenance.extra["crop"]["hi"], [8, 32, 32]); self.assertTrue(f.exact_geometry)
+        self.assertEqual(f.grid.origin, (1.0, 2.0, 3.0)); self.assertEqual(f.native_labels, radar.ORGANS)

@@ -28,6 +28,7 @@ map of pilot scripts still living in the design record. The design record is
 | `feldglas.adapters.null` | the null model - an anatomy-only encoder through the same suite. A stub, with its plan |
 | `feldglas.heads` | `MeanPoolHead`, for encoders that bring no head |
 | `feldglas.observe` | detection theory on the channels: a `NormalModel` (the unremarkable), Hotelling templates, a bank for an unknown parameter |
+| `feldglas.remote` | fields on a shared object store: the blobs are [provender](https://github.com/mhalle/provender)'s, the manifest that names them is ours |
 | `feldglas.suite` | the characterization suite: a registry of probes and where each stands; `gateability` runs here |
 | `tools/radar_export_modal.py` | the one GPU step: CTs -> RADAR token fields with exact geometry, on Modal |
 
