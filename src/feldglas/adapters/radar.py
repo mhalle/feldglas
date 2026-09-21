@@ -52,6 +52,36 @@ ORGANS = ("adrenal gland", "aorta", "erector spinae muscle", "brain", "clavicle"
 #: (The same check put the GRID itself within 0.10 mm of where a sphere was painted, so the
 #: 1-2.5 mm by which RADAR's own mask sits superior of haversack's is the mask's, not the field's.)
 LOOK_OFFSET_MM = {"deep": (6.6, 6.3, 7.6), "mid": (2.8, 2.2, 2.7), "fine": (1.1, 1.6, 1.4)}
+#: Which of RADAR's 36 organ QUERIES a named structure is pooled under, for TotalSegmentator's
+#: names (haversack `ts.v2:*`). By NAME and by rule, never by label value: values differ between
+#: tasks and versions. Derived from upstream's own merge table (`process_img_mask.merged_organ_id`,
+#: Apache-2.0) as the validation study used it, and checked name by name against that study's
+#: value-indexed table on the 70 structures of an abdominal `ts.v2:total_fast` result (2026-09-20).
+#: First match wins; a trailing ``*`` is a prefix. Structures with no RADAR organ (sternum, spinal
+#: cord, costal cartilages, S1 ...) are absent on purpose: `query_for` raises rather than guess.
+TS_QUERY_RULES = (
+    ("adrenal_gland_*", "adrenal gland"), ("aorta", "aorta"), ("autochthon_*", "erector spinae muscle"),
+    ("brain", "brain"), ("clavicula_*", "clavicle"), ("colon", "large bowel"), ("duodenum", "duodenum"),
+    ("esophagus", "esophagus"), ("femur_*", "femur"), ("gallbladder", "gallbladder"), ("gluteus_*", "gluteus muscle"),
+    ("heart", "heart"), ("hip_*", "hip joint"), ("humerus_*", "humerus"), ("iliac_artery_*", "iliac artery"),
+    ("iliac_vena_*", "iliac vein"), ("iliopsoas_*", "iliopsoas muscle"), ("inferior_vena_cava", "inferior vena cava"),
+    ("kidney_*", "kidney"), ("liver", "liver"), ("lung_*", "lung"), ("pancreas", "pancreas"),
+    ("portal_vein_and_splenic_vein", "portal vein"), ("rib_*", "rib"), ("sacrum", "sacrum"), ("scapula_*", "scapula"),
+    ("small_bowel", "small bowel"), ("spleen", "spleen"), ("stomach", "stomach"), ("trachea", "trachea"),
+    ("urinary_bladder", "bladder"), ("vertebrae_C*", "cervical vertebrae"), ("vertebrae_L*", "lumbar vertebrae"),
+    ("vertebrae_T*", "thoracic vertebrae"),
+)
+
+
+def query_for(structure: str, rules=TS_QUERY_RULES) -> str:
+    """The organ query a named structure is pooled under. RADAR has one learned query and one
+    projection per organ, so a gate is not enough - the question has to be the right organ's."""
+    for pat, organ in rules:
+        if structure == pat or (pat.endswith("*") and structure.startswith(pat[:-1])):
+            return organ
+    raise KeyError(f"RADAR has no organ query for {structure!r}: pass query= explicitly, or gate a structure it knows")
+
+
 _E, _H = 256, 4
 
 
@@ -175,7 +205,7 @@ def field_from_export(arrays, meta: dict) -> Field:
                  grid=Geometry(shape=tuple(g["shape"]), directions=tuple(tuple(row) for row in g["directions"]),
                                origin=tuple(g["origin"])),
                  provenance=provenance(source=meta["u"], **extra),
-                 native_mask=arrays["native_mask"], native_labels=ORGANS)
+                 native_mask=arrays.get("native_mask"), native_labels=ORGANS)   # None: an encoder-only encode (fp16 on MPS)
 
 
 def read_pilot_field(path) -> Field:

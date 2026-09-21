@@ -16,7 +16,7 @@ whole model equals the CPU to 1e-6 (the CPU itself takes ~100 s).
 
 The decoder is what RADAR's own 36-structure mask needs, and its ConvTranspose3d is refused by MPS
 in fp16 - so fp16 is encoder-only here, and a field written that way has NO native mask: gate it
-with haversack's labels. (haversack's ShuffleUp3d rewrite of transposed convolutions would lift
+with haversack's labels (`feldglas.labels.read_seg_nrrd`, `feldglas.session.Session`). (haversack's ShuffleUp3d rewrite of transposed convolutions would lift
 that; not needed yet.) The allocator is capped at the recommended working set, because past it
 Metal returns ZEROS silently (haversack, 2026-09-03) - a real shortfall then raises instead.
 
@@ -152,10 +152,7 @@ def main():
         rep["pooled_organ_vector_cosine (same gate, this encode vs the stored field)"] = vec
         print(json.dumps(rep, indent=1))
     if a.out or not a.check:
-        field = radar.field_from_export(arrays, meta) if own is not None else None
-        if field is None:
-            raise SystemExit("an encoder-only field has no native mask; the field format wants one today - rerun without --fp16/--no-mask, "
-                             "or use --check. (A mask-less field gated by haversack's labels is the next step.)")
+        field = radar.field_from_export(arrays, meta)     # no native mask after an encoder-only encode: gate it by name
         p = write_field(a.out or encoder_dir(radar.NAME) / "fields" / f"{u}.local.npz", field)
         print(f"-> {p}")
 
