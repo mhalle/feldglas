@@ -12,7 +12,19 @@ REAL checkpoint, against the field the L40S wrote for the same series (model gri
 and pooled organ vectors (liver, spleen, kidney, pancreas; same gate, numpy head) at cosine
 >= 0.999996 in every mode. The grid's origin is identical (0.0 mm): preprocessing runs on the CPU.
 The checkpoint loads with ``weights_only=True`` - no pickle is executed. With random weights the
-whole model equals the CPU to 1e-6 (the CPU itself takes ~100 s).
+whole model equals the CPU to 1e-6 (the CPU itself takes ~100 s). On the M2's CPU (2026-09-22), encoder
+only in fp32 took 23.0 s at token cosine >= 0.999995; fp16 there had not finished one pass in 6 min -
+CPU Conv3d has no fast fp16 kernel - so the tool refuses --fp16 on the CPU.
+
+Encoder only, the full-resolution stages run in slabs of slices (`encoder_in_slabs`; bitwise equal
+to the whole volume on MPS at slabs of 7, 16 and 96). Same M2, same series, 2026-09-22 (MPS memory is
+the driver's allocation, CPU the process's peak resident set):
+
+    MPS fp32   whole 7.8 s, 9.3 GB   slab 16  8.7 s, 5.4 GB   slab 8  10.3 s, 4.4 GB
+    MPS fp16   whole 3.1 s, 4.8 GB   slab 16  3.6 s, 3.3 GB   slab 8   4.2 s, 2.2 GB
+    CPU fp32   whole 20.5 s, 7.7 GB  slab 16 12.7 s, 5.5 GB   (faster too: the slabs stay in cache)
+
+so 16 is the default. The whole model (with the mask) does not slab: its decoder wants every skip.
 
 The decoder is what RADAR's own 36-structure mask needs, and its ConvTranspose3d is refused by MPS
 in fp16 - so fp16 is encoder-only here, and a field written that way has NO native mask: gate it
@@ -59,12 +71,42 @@ def vision_branch(checkpoint, device, dtype):
     return vb.to(device, dtype)
 
 
-def encode(vb, base, with_mask=True):
+def encoder_in_slabs(vb, base, slab):
+    """The encoder's last three skips, with its full-resolution stages run ``slab`` slices at a time.
+
+    Exact, not an approximation: norm is BatchNorm (in eval a per-channel affine, no volume
+    statistics), and the leading stages have z-stride 1, so an output slice sees only its input
+    slices +- the sum of their convolutions' z half-widths (2: stages 0-1 are 1 deep, stage 2 twice 3).
+    Each slab carries that halo, which is cut off again; only the small deep stages see the whole
+    volume. The halo is read from the network, not assumed."""
+    import torch
+    st = vb.UNet.encoder.stages
+    k = 0
+    while k < len(st) and all(m.stride[0] == 1 for m in st[k].modules() if isinstance(m, torch.nn.Conv3d)):
+        k += 1                                            # the stages that keep every slice
+    halo = sum((m.kernel_size[0] - 1) // 2 for m in st[:k].modules() if isinstance(m, torch.nn.Conv3d))
+    D, parts = base.shape[2], []
+    for z0 in range(0, D, slab):
+        z1 = min(z0 + slab, D); a, b = max(z0 - halo, 0), min(z1 + halo, D)
+        x = base[:, :, a:b]
+        for s in st[:k]:
+            x = s(x)
+        parts.append(x[:, :, z0 - a:x.shape[2] - (b - z1)])
+    x = torch.cat(parts, 2); del parts
+    skips = []
+    for s in st[k:]:
+        x = s(x); skips.append(x)
+    return skips[-3:]
+
+
+def encode(vb, base, with_mask=True, slab=0):
     """Tokens (deep, mid, fine) and, with the decoder, RADAR's own mask - as the export does it."""
     import torch, torch.nn.functional as F
     with torch.inference_mode():
         if with_mask:
             skips, segs = vb.UNet(base)
+        elif slab:
+            skips, segs = encoder_in_slabs(vb, base, slab), None
         else:
             skips, segs = vb.UNet.encoder(base), None
         toks = [g[0].flatten(1).T for g in (vb.proj1(skips[-1]), vb.proj2(skips[-2]), vb.proj3(skips[-3]))]
@@ -80,6 +122,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("ct"); ap.add_argument("--device", default="auto"); ap.add_argument("--fp16", action="store_true")
     ap.add_argument("--no-mask", action="store_true", help="encoder only: no native mask, about half the time and memory")
+    ap.add_argument("--slab", type=int, default=16, help="encoder only: run the full-resolution stages this many slices at a time (exact; 0 = whole volume)")
     ap.add_argument("--checkpoint", default=""); ap.add_argument("--out", default=""); ap.add_argument("--check", default="")
     a = ap.parse_args()
     import importlib.util
@@ -95,6 +138,8 @@ def main():
     dev = a.device
     if dev == "auto":
         dev = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    if a.fp16 and dev == "cpu":
+        raise SystemExit("--fp16 on the CPU is refused: its Conv3d has no fast fp16 kernel (encoder only ran > 6 min, fp32 23 s); drop --fp16")
     if dev == "mps":
         torch.mps.set_per_process_memory_fraction(1.0)   # past the working set Metal returns zeros, silently
     dtype = torch.float16 if a.fp16 else torch.float32
@@ -114,8 +159,8 @@ def main():
     t_prep = time.time() - t0
     x = base.to(dev, dtype)
     sync = (lambda: torch.mps.synchronize()) if dev == "mps" else (lambda: torch.cuda.synchronize()) if dev == "cuda" else (lambda: None)
-    t0 = time.time(); toks, own = encode(vb, x, with_mask); sync(); t_first = time.time() - t0
-    t0 = time.time(); toks, own = encode(vb, x, with_mask); sync(); t_enc = time.time() - t0
+    t0 = time.time(); toks, own = encode(vb, x, with_mask, a.slab); sync(); t_first = time.time() - t0
+    t0 = time.time(); toks, own = encode(vb, x, with_mask, a.slab); sync(); t_enc = time.time() - t0
     toks = [t.float().cpu().numpy() for t in toks]
     if not all(np.isfinite(t).all() for t in toks) or any(np.abs(t).max() == 0 for t in toks):
         raise SystemExit("the encode returned zeros or non-finite tokens: out of memory on this device (try --fp16 or --no-mask)")
