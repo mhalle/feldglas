@@ -26,6 +26,12 @@ the image so the container opens the same store (see radar_export_modal.py for w
 Run:  FELDGLAS_STORE=s3://<bucket>/feldglas uv run --no-sync modal run tools/radar_atlas_modal.py::main --limit 6
       FELDGLAS_STORE=s3://<bucket>/feldglas uv run --no-sync modal run tools/radar_atlas_modal.py::main
       FELDGLAS_STORE=s3://<bucket>/feldglas uv run --no-sync modal run tools/radar_atlas_modal.py::analysis
+
+The NULL model's fields (``tools/null_export_modal.py``) go through the same steps with
+``FELDGLAS_ENCODER=null-totalsegmentator``: its own manifest, work volume (``feldglas-null-work``)
+and results (``normal_atlas_null.json``), the mean-per-lattice head, and no RADAR-finding
+detectors. The organ names are RADAR's either way - the null export maps TotalSegmentator's labels
+into RADAR's 36 organs - so boxes are drawn over the same organs by the same rules.
 """
 import csv, io, json, os, pathlib, time
 
@@ -40,16 +46,25 @@ def _up(n):
 
 MEDSEG = _up(1) / "medseg" / "docs" / "radar-idc-validation"
 _STORE = os.environ.get("FELDGLAS_STORE", "")
+# WHICH ENCODER's fields (2026-09-22, the null model): "radar" or "null-totalsegmentator". Baked
+# into the image as the store is, so a container decides alike. Each encoder has its own work
+# volume and results file; RADAR keeps the names it had. The null model has no head of its own
+# (mean per lattice) and no vocabulary, so the two RADAR-finding detectors run for RADAR only.
+ENCODER = os.environ.get("FELDGLAS_ENCODER", "radar")
+if ENCODER not in ("radar", "null-totalsegmentator"):
+    raise SystemExit(f"FELDGLAS_ENCODER={ENCODER!r}: radar or null-totalsegmentator")
+SUFFIX = "" if ENCODER == "radar" else "_null"
 _SECRET = os.environ.get("FELDGLAS_MODAL_SECRET", "feldglas-r2")
 image = (modal.Image.debian_slim(python_version="3.12").apt_install("git")
          .pip_install("numpy>=1.24", "scipy", "obstore>=0.11", "idc-index", "highdicom>=0.23", "pydicom>=3",
                       "pylibjpeg", "pylibjpeg-libjpeg",
                       "rankfield @ git+https://github.com/mhalle/rankfield.git@v0.3.2",
                       "provender @ git+https://github.com/mhalle/provender.git@v0.1.1")
-         .env({"FELDGLAS_STORE": _STORE})
+         .env({"FELDGLAS_STORE": _STORE, "FELDGLAS_ENCODER": ENCODER})
          .add_local_python_source("feldglas"))
-work = modal.Volume.from_name("feldglas-radar-work", create_if_missing=True)
-app = modal.App("feldglas-radar-atlas")
+work = modal.Volume.from_name("feldglas-radar-work" if ENCODER == "radar" else "feldglas-null-work",
+                              create_if_missing=True)
+app = modal.App("feldglas-radar-atlas" if ENCODER == "radar" else "feldglas-null-atlas")
 
 # cohort -> (the organ its expert SEG marks, RADAR's finding for it)
 TARGET = {"hcc_tace_seg": ("liver", "Liver_Hepatocellular carcinoma"),
@@ -79,10 +94,10 @@ def regions(u: str, digest: str, pid: str, coll: str, phase: str, seg_series: st
     try:
         with tempfile.TemporaryDirectory() as d:
             p = pathlib.Path(d) / f"{u}.npz"
-            if not open_blobs(radar.NAME, check=False).fetch(digest, p):
+            if not open_blobs(ENCODER, check=False).fetch(digest, p):
                 raise FileNotFoundError(f"blob {digest} is gone, or did not match its name")
             field = read_field(p)
-            head = radar.RadarHead.load("/work/head.npz")
+            head = _head(field)
             prepared = head.prepare(field.all_tokens())
             voxel_ml = float(np.prod(field.grid.spacing)) * 1e-3
 
@@ -167,6 +182,17 @@ def regions(u: str, digest: str, pid: str, coll: str, phase: str, seg_series: st
     return json.dumps(meta)
 
 
+# _read_whole (2026-09-22): np.load on a volume path reads each array in 256 KB pieces through
+# zipfile, and every piece is a round trip on the Modal volume's network mount - ~5 MB/s. The null
+# model's region files (704-wide vectors, 5.8 GB for 475 scans) took 23 minutes to load that way
+# (py-spy: zipfile.read under np.load). One read_bytes per file is one round trip.
+
+
+def _head(field=None):
+    from feldglas.adapters import null, radar
+    return radar.RadarHead.load("/work/head.npz") if ENCODER == "radar" else null.head()
+
+
 @app.function(image=image, volumes={"/work": work}, cpu=8, memory=49152, timeout=7200)
 def analyze(seed: int = 0) -> str:
     import numpy as np
@@ -174,19 +200,21 @@ def analyze(seed: int = 0) -> str:
     from feldglas.observe import NormalModel
     from feldglas.suite import normal_atlas as na
     rng = np.random.default_rng(seed)
-    head = radar.RadarHead.load("/work/head.npz")
-    with np.load("/work/text_en.npz") as z:
-        text = {k: z[k].astype(np.float64) for k in z.files}
+    text = {}
+    if ENCODER == "radar":
+        head = radar.RadarHead.load("/work/head.npz")
+        with np.load("/work/text_en.npz") as z:
+            text = {k: z[k].astype(np.float64) for k in z.files}
     scans = []
     for p in sorted(pathlib.Path("/work/regions").glob("*.npz")):
         if p.name.endswith(".tmp.npz"):
             continue
-        with np.load(p) as z:
+        with np.load(io.BytesIO(p.read_bytes())) as z:     # whole: see _read_whole
             s = {k: z[k] for k in z.files if k != "meta"}
             s["meta"] = json.loads(str(z["meta"]))
         scans.append(s)
     donors = [s for s in scans if s["meta"]["coll"] == DONORS]
-    out = {"scans": len(scans), "donors": len(donors), "cohorts": {}, "atlas": {}, "coverage": {}}
+    out = {"encoder": ENCODER, "scans": len(scans), "donors": len(donors), "cohorts": {}, "atlas": {}, "coverage": {}}
     print(f"{len(scans)} scans, {len(donors)} donors", flush=True)
 
     def take(s, organ_val, size, rule=0):
@@ -240,6 +268,8 @@ def analyze(seed: int = 0) -> str:
              "maha_own_median_donor_within": lambda V, s, k: within.distance(V, centre=np.median(V, 0)),
              "radar_target_finding": lambda V, s, k: finding(V, fname),
              "radar_any_finding_of_organ": lambda V, s, k: np.max([finding(V, n) for n in family], 0)}
+        if not text:                                      # an encoder with no vocabulary
+            D = {k: v for k, v in D.items() if not k.startswith("radar_")}
         D = {k: v for k, v in D.items() if detectors is None or k in detectors}
         per = {d: {"A": [], "B": []} for d in D}; pool = {d: {"s": [], "A": [], "B": [], "clean": []} for d in D}
         fscans = {d: [] for d in D}
@@ -331,7 +361,7 @@ def analyze(seed: int = 0) -> str:
                                                      [round(float(v), 3) for v in np.mean(vals, 0)]))
         print(f"{coll} done", flush=True)
     pathlib.Path("/work/results").mkdir(parents=True, exist_ok=True)
-    pathlib.Path("/work/results/normal_atlas.json").write_text(json.dumps(out, indent=1))
+    pathlib.Path(f"/work/results/normal_atlas{SUFFIX}.json").write_text(json.dumps(out, indent=1))
     work.commit()
     return json.dumps(out)
 
@@ -350,7 +380,7 @@ def tails(size: int = 32) -> str:
     scans = []
     for p in sorted(pathlib.Path("/work/regions").glob("*.npz")):
         if not p.name.endswith(".tmp.npz"):
-            with np.load(p) as z:
+            with np.load(io.BytesIO(p.read_bytes())) as z:     # whole: see _read_whole
                 s = {k: z[k] for k in z.files if k != "meta"}; s["meta"] = json.loads(str(z["meta"]))
             scans.append(s)
     out = {}
@@ -427,13 +457,13 @@ def tails(size: int = 32) -> str:
         out[coll] = R
         print(coll, "done", flush=True)
     pathlib.Path("/work/results").mkdir(parents=True, exist_ok=True)
-    pathlib.Path(f"/work/results/normal_atlas_tails_{size}.json").write_text(json.dumps(out, indent=1)); work.commit()
+    pathlib.Path(f"/work/results/normal_atlas{SUFFIX}_tails_{size}.json").write_text(json.dumps(out, indent=1)); work.commit()
     return json.dumps(out)
 
 
 def _jobs(collection: str, limit: int):
     from feldglas.remote import Manifest
-    mf = Manifest.load(HERE.parent / "manifests" / "radar.json")
+    mf = Manifest.load(HERE.parent / "manifests" / f"{ENCODER}.json")
     V, I = MEDSEG / "results" / "validation", MEDSEG / "results" / "idc"
     se_of = {r["crdc_series_uuid"]: r["se"] for r in csv.DictReader(open(I / "radar_validation_series_all.csv"))}
     seg = {(r["pid"], r["ref_series"]): r["seg_series"] for r in csv.DictReader(open(I / "expert_segs.csv"))
@@ -464,13 +494,14 @@ def main(collection: str = "", limit: int = 0, force: bool = False):
     from feldglas.paths import encoder_dir
     if not _STORE.startswith(("s3://", "gs://", "az://")):
         raise SystemExit("set FELDGLAS_STORE (e.g. s3://<bucket>/feldglas): the fields are read from it")
-    cache = encoder_dir(radar.NAME)
-    names = radar.english_names(MEDSEG.parents[1] / "upstream" / "damo-radar" / "RADAR_inference" / "inference_demo.py")
-    table = radar.load_text_table(cache / "text_table.npz")
-    buf = io.BytesIO(); np.savez(buf, **{names[k]: v for k, v in table.items()})
-    with work.batch_upload(force=True) as up:            # 11 MB, once per run: the container's head and vocabulary
-        up.put_file(str(cache / "head.npz"), "/head.npz")
-        up.put_file(io.BytesIO(buf.getvalue()), "/text_en.npz")
+    if ENCODER == "radar":
+        cache = encoder_dir(radar.NAME)
+        names = radar.english_names(MEDSEG.parents[1] / "upstream" / "damo-radar" / "RADAR_inference" / "inference_demo.py")
+        table = radar.load_text_table(cache / "text_table.npz")
+        buf = io.BytesIO(); np.savez(buf, **{names[k]: v for k, v in table.items()})
+        with work.batch_upload(force=True) as up:        # 11 MB, once per run: the container's head and vocabulary
+            up.put_file(str(cache / "head.npz"), "/head.npz")
+            up.put_file(io.BytesIO(buf.getvalue()), "/text_en.npz")
     jobs = _jobs(collection, limit)
     print(f"{len(jobs)} scans: " + ", ".join(f"{c} {sum(j[3] == c for j in jobs)}" for c in sorted({j[3] for j in jobs})))
     t = time.time(); n = {"ok": 0, "cached": 0, "err": 0}
@@ -491,7 +522,7 @@ def main(collection: str = "", limit: int = 0, force: bool = False):
 @app.local_entrypoint()
 def analysis(out: str = ""):
     r = json.loads(analyze.remote())
-    p = pathlib.Path(out) if out else MEDSEG / "results" / "validation" / "normal_atlas.json"
+    p = pathlib.Path(out) if out else MEDSEG / "results" / "validation" / f"normal_atlas{SUFFIX}.json"
     p.write_text(json.dumps(r, indent=1))
     print(f"-> {p}")
     for coll, C in r["cohorts"].items():
@@ -512,7 +543,7 @@ def analysis(out: str = ""):
 @app.local_entrypoint()
 def tail_study(size: int = 32, out: str = ""):
     r = json.loads(tails.remote(size))
-    p = pathlib.Path(out) if out else MEDSEG / "results" / "validation" / f"normal_atlas_tails_{size}.json"
+    p = pathlib.Path(out) if out else MEDSEG / "results" / "validation" / f"normal_atlas{SUFFIX}_tails_{size}.json"
     p.write_text(json.dumps(r, indent=1)); print(f"-> {p}")
     for coll, R in r.items():
         print(f"\n{coll}   donor variance in the top 4 / 16 / 64 axes: {R['eigen_share_top_4_16_64']}   site/donor spread by axis band: {R.get('site_to_donor_spread_ratio_axes_0-16_16-64_64-256')}")

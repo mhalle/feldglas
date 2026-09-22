@@ -79,7 +79,11 @@ class NormalModel:
         """Mahalanobis distance from ``centre`` - the model's own mean, or a reference the user
         supplies (the mean of a few "this is normal" regions of THIS scan)."""
         D = np.atleast_2d(np.asarray(X, np.float64)) - (self.mean if centre is None else np.asarray(centre, np.float64))
-        return np.sqrt(np.maximum(np.einsum("ij,jk,ik->i", D, self.precision, D), 0.0))
+        # ((D @ P) * D).sum(1), not einsum("ij,jk,ik->i"): unoptimized, einsum runs the three
+        # operands as one single-threaded C loop with no BLAS - 156x slower at 704 dimensions
+        # (5.6 s against 0.036 s for 8,000 boxes; equal to 2e-15), and it was the whole of the
+        # null model's atlas analysis (py-spy, 2026-09-22)
+        return np.sqrt(np.maximum(((D @ self.precision) * D).sum(1), 0.0))
 
     def save(self, path) -> pathlib.Path:
         path = pathlib.Path(path); path.parent.mkdir(parents=True, exist_ok=True)
