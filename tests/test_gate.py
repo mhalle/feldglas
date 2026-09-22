@@ -65,3 +65,47 @@ class FastBoxes(unittest.TestCase):
                     np.testing.assert_array_equal(a.index, b.index)
                     np.testing.assert_allclose(a.occupancy, b.occupancy, atol=1e-6)
                     np.testing.assert_array_equal(a.lattice, b.lattice)
+
+
+class BoxCenters(unittest.TestCase):
+    """A box is centered where it says it is (2026-09-22). The old rule floored the lower edge, so
+    along any axis whose half size is not a whole number of voxels every box took an extra voxel
+    below: half a voxel low (2.5 mm in z on RADAR's 5 x 1 x 1 mm grid, every axis on the null
+    model's) and a voxel too big."""
+
+    GRIDS = (((64, 256, 256), (5.0, 1.0, 1.0)), ((96, 96, 96), (3.0, 3.0, 3.0)), ((192, 192, 192), (1.5, 1.5, 1.5)))
+
+    def test_a_box_about_a_voxel_is_centered_on_it_and_holds_exactly_the_voxels_within_it(self):
+        from feldglas.gate import box_bounds
+        rng = np.random.default_rng(0)
+        for shape, sp in self.GRIDS:
+            for size in (16.0, 32.0, 64.0):
+                half = np.array([size / s / 2 for s in sp])
+                for _ in range(20):
+                    c = np.array([rng.integers(int(h) + 2, n - int(h) - 2) for h, n in zip(half, shape)])
+                    lo, hi = box_bounds(c, size, sp, shape)
+                    np.testing.assert_array_equal(lo + hi - 1, 2 * c, err_msg=f"{sp} {size} mm about {c}")
+                    for d in range(3):                           # exactly the voxel centers within +-h
+                        want = [i for i in range(shape[d]) if abs(i - c[d]) <= half[d] + 1e-9]
+                        self.assertEqual((lo[d], hi[d] - 1), (want[0], want[-1]), f"{sp} axis {d} {size} mm")
+
+    def test_fractional_centers_are_unbiased(self):
+        from feldglas.gate import box_bounds
+        rng = np.random.default_rng(1)
+        for shape, sp in self.GRIDS:
+            c = np.stack([rng.uniform(n // 4, n - n // 4, 2000) for n in shape], 1)
+            lo, hi = box_bounds(c, 32.0, sp, shape)
+            bias = ((lo + hi - 1) / 2.0 - c).mean(0)
+            self.assertTrue(np.all(np.abs(bias) < 0.05), f"{sp}: mean offset {bias}")
+
+    def test_the_mask_the_gate_and_the_sweep_cut_the_same_box(self):
+        from feldglas.gate import box, box_bounds
+        from feldglas.suite.normal_atlas import _edges
+        f = make_field()
+        c = np.array([7, 30, 25])
+        lo, hi = box_bounds(c, 32.0, f.grid.spacing, f.grid.shape)
+        m = box(f, c, 32.0)
+        idx = np.argwhere(m)
+        np.testing.assert_array_equal(idx.min(0), lo); np.testing.assert_array_equal(idx.max(0), hi - 1)
+        l2, h2 = _edges(c[None], 32.0, f.grid.spacing, f.grid.shape)
+        np.testing.assert_array_equal(l2[0], lo); np.testing.assert_array_equal(h2[0], hi)

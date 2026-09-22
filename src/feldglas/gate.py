@@ -100,9 +100,33 @@ def select(field: Field, mask: np.ndarray, rule="any", within=None) -> Gate:
                 np.concatenate(lat).astype(np.int8))
 
 
+#: Float noise must not decide whether a voxel whose center sits exactly on a box face is in it.
+_FACE_TOLERANCE = 1e-6
+
+
+def box_bounds(centers, size_mm: float, spacing, shape):
+    """``(lo, hi)`` model-grid indices, ``hi`` exclusive, of the boxes of ``size_mm`` about
+    ``centers`` (``(3,)`` or ``(N, 3)``, Z Y X, whole or fractional): the voxels whose CENTERS lie
+    within the box, clipped at the grid's edge. THE one rule - ``box``, ``box_gate`` and the
+    atlas's sweep all cut boxes here.
+
+    A voxel ``i`` is in when ``c - h <= i <= c + h`` (``h`` the half size in voxels), so the box
+    runs from ``ceil(c - h)`` to ``floor(c + h)``, symmetric about ``c``. Until 2026-09-22 the lower
+    edge was ``int(c - h)`` - a floor - and every box took one extra voxel on its low side along any
+    axis whose half size is not a whole number of voxels: centered half a voxel below its stated
+    center (2.5 mm in z on RADAR's 5 x 1 x 1 mm grid, 1.5 mm on every axis of the null model's
+    3 mm grid) and one voxel too big there (RADAR's 32 mm box was 40 mm deep). Found by another
+    session reading box centers against their indices; measured before the fix."""
+    c = np.asarray(centers, np.float64)
+    half = np.asarray([size_mm / float(s) / 2.0 for s in spacing])
+    lo = np.ceil(c - half - _FACE_TOLERANCE).astype(np.int64)
+    hi = np.floor(c + half + _FACE_TOLERANCE).astype(np.int64) + 1
+    return np.maximum(lo, 0), np.minimum(hi, np.asarray(shape, np.int64))
+
+
 def _box_slices(field: Field, center, size_mm: float):
-    half = [size_mm / s / 2.0 for s in field.grid.spacing]
-    return tuple(slice(max(int(c - h), 0), min(int(c + h) + 1, n)) for c, h, n in zip(center, half, field.grid.shape))
+    lo, hi = box_bounds(center, size_mm, field.grid.spacing, field.grid.shape)
+    return tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
 
 
 def box(field: Field, center, size_mm: float) -> np.ndarray:

@@ -30,7 +30,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..contract import Field
-from ..gate import box_gate, occupancies
+from ..gate import box_bounds, box_gate, occupancies
 from ..observe import shrunk_covariance
 
 ML_PER_MM3 = 1e-3
@@ -38,11 +38,10 @@ ML_PER_MM3 = 1e-3
 
 # -- boxes ------------------------------------------------------------------------------------
 def _edges(centers: np.ndarray, size_mm: float, spacing, shape):
-    """The same slices ``gate._box_slices`` cuts, for many centers at once."""
-    half = np.asarray([size_mm / s / 2.0 for s in spacing])
-    lo = np.maximum((centers - half).astype(np.int64), 0)
-    hi = np.minimum((centers + half).astype(np.int64) + 1, np.asarray(shape))
-    return lo, hi
+    """The slices ``gate.box_bounds`` cuts, for many centers at once - the same function, not a
+    second copy of its rule (two copies kept in step by a test both carried the half-voxel
+    offset until 2026-09-22)."""
+    return box_bounds(centers, size_mm, spacing, shape)
 
 
 def integral(volume: np.ndarray) -> np.ndarray:
