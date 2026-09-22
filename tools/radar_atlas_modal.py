@@ -51,9 +51,13 @@ _STORE = os.environ.get("FELDGLAS_STORE", "")
 # volume and results file; RADAR keeps the names it had. The null model has no head of its own
 # (mean per lattice) and no vocabulary, so the two RADAR-finding detectors run for RADAR only.
 ENCODER = os.environ.get("FELDGLAS_ENCODER", "radar")
-if ENCODER not in ("radar", "null-totalsegmentator"):
-    raise SystemExit(f"FELDGLAS_ENCODER={ENCODER!r}: radar or null-totalsegmentator")
-SUFFIX = "" if ENCODER == "radar" else "_null"
+# encoder -> (its work volume, its results' suffix). RADAR keeps the names it had.
+ENCODERS = {"radar": ("feldglas-radar-work", ""),
+            "null-totalsegmentator": ("feldglas-null-work", "_null"),
+            "null-totalsegmentator-1.5mm": ("feldglas-null15-work", "_null15")}
+if ENCODER not in ENCODERS:
+    raise SystemExit(f"FELDGLAS_ENCODER={ENCODER!r}: one of {sorted(ENCODERS)}")
+SUFFIX = ENCODERS[ENCODER][1]
 _SECRET = os.environ.get("FELDGLAS_MODAL_SECRET", "feldglas-r2")
 image = (modal.Image.debian_slim(python_version="3.12").apt_install("git")
          .pip_install("numpy>=1.24", "scipy", "obstore>=0.11", "idc-index", "highdicom>=0.23", "pydicom>=3",
@@ -62,9 +66,8 @@ image = (modal.Image.debian_slim(python_version="3.12").apt_install("git")
                       "provender @ git+https://github.com/mhalle/provender.git@v0.1.1")
          .env({"FELDGLAS_STORE": _STORE, "FELDGLAS_ENCODER": ENCODER})
          .add_local_python_source("feldglas"))
-work = modal.Volume.from_name("feldglas-radar-work" if ENCODER == "radar" else "feldglas-null-work",
-                              create_if_missing=True)
-app = modal.App("feldglas-radar-atlas" if ENCODER == "radar" else "feldglas-null-atlas")
+work = modal.Volume.from_name(ENCODERS[ENCODER][0], create_if_missing=True)
+app = modal.App("feldglas-radar-atlas" if ENCODER == "radar" else f"feldglas-{ENCODER.replace('totalsegmentator', 'ts').replace('.', '')}-atlas")
 
 # cohort -> (the organ its expert SEG marks, RADAR's finding for it)
 TARGET = {"hcc_tace_seg": ("liver", "Liver_Hepatocellular carcinoma"),
@@ -192,8 +195,9 @@ def regions(u: str, digest: str, pid: str, coll: str, phase: str, seg_series: st
 
 
 def _head(field=None):
-    from feldglas.adapters import null, radar
-    return radar.RadarHead.load("/work/head.npz") if ENCODER == "radar" else null.head()
+    from feldglas.adapters import radar
+    from feldglas.heads import LatticeMeanHead
+    return radar.RadarHead.load("/work/head.npz") if ENCODER == "radar" else LatticeMeanHead.for_field(field)
 
 
 @app.function(image=image, volumes={"/work": work}, cpu=8, memory=49152, timeout=7200)

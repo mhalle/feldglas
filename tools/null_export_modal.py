@@ -47,6 +47,10 @@ CHOICE = MEDSEG / "docs" / "radar-idc-validation" / "results" / "validation" / "
 HAVERSACK = "651aff741329e6b9542c3f88e025be0510b821e1"          # main, 2026-09-22 (rankfield v0.3.3 pin)
 DTYPE = "fp16"                                                  # haversack's default for a segmentation
 _STORE = os.environ.get("FELDGLAS_STORE", "")
+# WHICH null encoder (2026-09-22): null-totalsegmentator (total_fast, 3 mm) or
+# null-totalsegmentator-1.5mm (Dataset 291, the resolution control). Baked into the image like the
+# store, so the container loads the model the laptop meant; it names the manifest and the store prefix.
+ENCODER = os.environ.get("FELDGLAS_ENCODER", "null-totalsegmentator")
 _SECRET = os.environ.get("FELDGLAS_MODAL_SECRET", "feldglas-r2")
 # decided on the laptop and baked into the image, so a container re-importing this decides alike
 # (radar_export_modal.py has the story of the crash loop the other way cost)
@@ -56,7 +60,7 @@ image = (modal.Image.debian_slim(python_version="3.12").apt_install("git")
                       "obstore>=0.11",
                       "rankfield @ git+https://github.com/mhalle/rankfield.git@v0.3.3",
                       "provender @ git+https://github.com/mhalle/provender.git@v0.1.1")
-         .env({"FELDGLAS_STORE": _STORE, "FELDGLAS_MODAL_SECRET": _SECRET,
+         .env({"FELDGLAS_STORE": _STORE, "FELDGLAS_MODAL_SECRET": _SECRET, "FELDGLAS_ENCODER": ENCODER,
                "FELDGLAS_GPU": os.environ.get("FELDGLAS_GPU", "")})
          .add_local_python_source("feldglas"))
 ctvol = modal.Volume.from_name("radar-idc-validation")
@@ -78,7 +82,8 @@ class Export:
     @modal.enter()
     def load(self):
         from feldglas.adapters import null
-        self.m, self.label_map = null.load_model("/weights", device="cuda", dtype=DTYPE)
+        self.v = null.variant(ENCODER)
+        self.m, self.label_map = null.load_model("/weights", device="cuda", dtype=DTYPE, v=self.v)
 
     @modal.method()
     def field(self, u: str, store_url: str = "", check: bool = False) -> bytes:
@@ -89,7 +94,7 @@ class Export:
         try:
             ctvol.reload()
             path = f"/vol/ct/{u}.nii.gz"
-            tokens, labels, m = null.encode(path, self.m)
+            tokens, labels, m = null.encode(path, self.m, self.v)
             import torch
             meta.update(m, haversack=HAVERSACK, device=f"cuda:{torch.cuda.get_device_name(0)}")
             for j, t in enumerate(tokens):
@@ -97,7 +102,7 @@ class Export:
             arrays["native_mask"] = null.organ_mask(labels, self.label_map).astype(np.uint8)
             if check:
                 meta["check"] = null.check_against_haversack(path, labels, meta["grid"], self.label_map,
-                                                             "/weights", device="cuda")
+                                                             "/weights", device="cuda", v=self.v)
         except Exception as e:
             import traceback
             meta["err"] = f"{type(e).__name__}: {e}"[:300]; meta["trace"] = traceback.format_exc()[-1500:]
@@ -107,7 +112,7 @@ class Export:
             field = null.field_from_export(arrays, meta)
             with tempfile.TemporaryDirectory() as d:
                 p = write_field(pathlib.Path(d) / f"{u}.npz", field)
-                blobs = open_blobs(null.NAME, store_url)
+                blobs = open_blobs(self.v.name, store_url)
                 blob = blobs.put_file(p)
                 assert blobs.has(blob["digest"])
                 return json.dumps({"name": p.name, **blob, "provenance": read_meta(p)["provenance"],
@@ -132,7 +137,7 @@ def main(uuids: str = "", collection: str = "", phase: str = "", limit: int = 4,
     if store.startswith(("s3://", "gs://", "az://")) and store != _STORE:
         raise SystemExit(f"--store {store} needs its credentials attached when the app is DEFINED: run with "
                          f"FELDGLAS_STORE={store} in the environment and pass --store env")
-    mf = Manifest.load(manifest or HERE.parent / "manifests" / f"{null.NAME}.json") if store else None
+    mf = Manifest.load(manifest or HERE.parent / "manifests" / f"{ENCODER}.json") if store else None
     if uuids:
         jobs = [u.strip() for u in uuids.split(",") if u.strip()]
     else:
@@ -145,7 +150,7 @@ def main(uuids: str = "", collection: str = "", phase: str = "", limit: int = 4,
             jobs = [u for u in jobs if u not in done]
             print(f"{len(done)} series already in the manifest; {len(jobs)} to go")
         jobs = jobs[:limit]
-    out = encoder_dir(null.NAME) / "fields"
+    out = encoder_dir(ENCODER) / "fields"
     t = time.time()
     checks = {}
     for u, blob in zip(jobs, Export().field.starmap([(u, store, check) for u in jobs], return_exceptions=True)):
@@ -180,7 +185,7 @@ def main(uuids: str = "", collection: str = "", phase: str = "", limit: int = 4,
         print(f"  check {u}: {len(c)} organs, centroid gap median {np.median([a for a, _ in mm]):.2f} mm, "
               f"worst {mm[-1][0]:.2f} mm ({mm[-1][1]}); volume ratio {min(vr):.3f}-{max(vr):.3f}")
     if checks:
-        p = encoder_dir(null.NAME) / "geometry_check.json"
+        p = encoder_dir(ENCODER) / "geometry_check.json"
         p.parent.mkdir(parents=True, exist_ok=True); p.write_text(json.dumps(checks, indent=1))
         print(f"-> {p}")
     if mf is not None and mf.files and not store.startswith("memory://"):

@@ -177,3 +177,50 @@ class OrgansAndGeometry(unittest.TestCase):
         self.assertEqual(g.provenance.license, "Apache-2.0")
         self.assertEqual(g.provenance.code, "651aff7")
         self.assertEqual(g.native_labels, radar.ORGANS)
+
+
+class Variants(unittest.TestCase):
+    """The resolution control (2026-09-22): Dataset 291 at 1.5 mm, one stage deeper so its tokens are
+    the same 12 / 24 / 48 mm as total_fast's."""
+
+    def test_both_variants_keep_the_same_token_sizes_in_millimeters(self):
+        fast, fine = null.VARIANTS["null-totalsegmentator"], null.VARIANTS["null-totalsegmentator-1.5mm"]
+        mm = lambda v, spacing: [k[0] * spacing for k in v.kernels]
+        self.assertEqual(mm(fast, 3.0), mm(fine, 1.5))
+        self.assertEqual((fast.align, fine.align), (16, 32))
+        self.assertEqual(null.DEFAULT, fast)                     # the old constants are the first variant's
+        self.assertEqual((null.KERNELS, null.WIDTHS), (fast.kernels, fast.widths))
+
+    def test_the_fine_variant_places_every_tiles_tokens_exactly(self):
+        v, patch = null.VARIANTS["null-totalsegmentator-1.5mm"], (128, 128, 128)
+        padded = tuple(null.padded_extent(n, p, v.align) for n, p in zip((250, 300, 333), patch))
+        self.assertTrue(all(p % 32 == 0 for p in padded))
+        truth = [np.add.outer(np.add.outer(np.arange(padded[0] // k[0]) * 1e4, np.arange(padded[1] // k[1]) * 1e2),
+                              np.arange(padded[2] // k[2])) for k in v.kernels]
+        acc = [np.zeros_like(t) for t in truth]; wsum = [np.zeros_like(t) for t in truth]
+        g = np.random.default_rng(2).random(patch) + 0.1
+        W = [null.token_weights(g, k) for k in v.kernels]
+        for vox, toks in null.tile_slices(padded, patch, v.kernels, v.align):
+            self.assertTrue(all(s.start % 32 == 0 for s in vox))
+            for j, sl in enumerate(toks):
+                acc[j][sl] += truth[j][sl] * W[j]; wsum[j][sl] += W[j]
+        for j in range(3):
+            np.testing.assert_allclose(acc[j] / wsum[j], truth[j], rtol=1e-12)
+
+    def test_an_export_names_its_variant_and_an_old_one_is_the_first(self):
+        v = null.VARIANTS["null-totalsegmentator-1.5mm"]
+        shape = (64, 64, 64)
+        rng = np.random.default_rng(3)
+        arrays = {f"tokens{j}": rng.standard_normal((int(np.prod([s // kk for s, kk in zip(shape, k)])), w)).astype(np.float32)
+                  for j, (k, w) in enumerate(zip(v.kernels, v.widths))}
+        grid = {"shape": list(shape), "directions": [[1.5, 0, 0], [0, 1.5, 0], [0, 0, 1.5]], "origin": [0, 0, 0]}
+        f = null.field_from_export(arrays, {"u": "s", "grid": grid, "encoder": v.name})
+        self.assertEqual((f.kernels, f.widths, f.provenance.encoder), (list(v.kernels), v.widths, v.name))
+        self.assertIn("Dataset291", f.provenance.weights)
+        old = mixed_field()
+        meta = {"u": "s", "grid": {"shape": list(SHAPE), "directions": [list(r) for r in old.grid.directions],
+                                   "origin": list(old.grid.origin)}}
+        g = null.field_from_export({f"tokens{j}": t for j, t in enumerate(old.tokens)}, meta)
+        self.assertEqual(g.provenance.encoder, "null-totalsegmentator")
+        with self.assertRaises(KeyError):
+            null.variant("null-nothing")

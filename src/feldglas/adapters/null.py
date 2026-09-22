@@ -46,6 +46,7 @@ Modal the global ``haversack-weights`` volume - and fetches nothing. Two callers
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import numpy as np
 from rankfield.geometry import Geometry
@@ -53,19 +54,60 @@ from rankfield.geometry import Geometry
 from ..contract import Field, Provenance
 from ..heads import LatticeMeanHead
 
-NAME = "null-totalsegmentator"
-TASK = "ts.v2:total_fast"
-DATASET = 297
-STAGES = (2, 3, 4)                                   # encoder stages kept, shallow to deep
-KERNELS = ((4, 4, 4), (8, 8, 8), (16, 16, 16))        # their strides on the model grid
-WIDTHS = (128, 256, 320)                              # their channels (min(32 * 2**stage, 320))
-ALIGN = 16                                            # the deepest kept stride: tiles start on it
 LICENSE = "Apache-2.0"                                # TotalSegmentator's open weights (haversack's attribution record)
 PREPROCESSING = "null-1"                              # this adapter's tiling and blending rule
 
 
-def head() -> LatticeMeanHead:
-    return LatticeMeanHead(WIDTHS)
+@dataclass(frozen=True)
+class Variant:
+    """One null encoder: which TotalSegmentator network, and which of its encoder stages are the
+    lattices. ``name`` is the encoder's name everywhere a field is filed (provenance, manifest, the
+    store's prefix, the atlas tool's ``FELDGLAS_ENCODER``); ``task`` is what haversack's own
+    ``segment`` runs for the geometry check."""
+
+    name: str
+    task: str
+    dataset: int
+    stages: tuple[int, ...]                           # encoder stages kept, shallow to deep
+    kernels: tuple[tuple[int, int, int], ...]         # their strides on the model grid
+    widths: tuple[int, ...]                           # their channels (min(32 * 2**stage, 320))
+
+    @property
+    def align(self) -> int:
+        """The deepest kept stride: every tile starts on a multiple of it."""
+        return max(max(k) for k in self.kernels)
+
+    def head(self) -> LatticeMeanHead:
+        return LatticeMeanHead(self.widths)
+
+
+#: The null encoders. Both keep 12 / 24 / 48 mm tokens, so what differs between them is the
+#: input: ``total_fast`` sees the CT at 3 mm; the 1.5 mm organs model (Dataset 291, the first of
+#: ``total``'s five parts - liver, kidneys, spleen, pancreas, lungs, bowel ...) sees it at 1.5 mm,
+#: from one stage deeper to keep the token sizes (2026-09-22: the resolution control of 5.12).
+VARIANTS = {v.name: v for v in (
+    Variant("null-totalsegmentator", "ts.v2:total_fast", 297, (2, 3, 4),
+            ((4, 4, 4), (8, 8, 8), (16, 16, 16)), (128, 256, 320)),
+    Variant("null-totalsegmentator-1.5mm", "ts.v2:total", 291, (3, 4, 5),
+            ((8, 8, 8), (16, 16, 16), (32, 32, 32)), (256, 320, 320)),
+)}
+DEFAULT = VARIANTS["null-totalsegmentator"]
+# the first variant's facts under the names they had before there were two
+NAME, TASK, DATASET = DEFAULT.name, DEFAULT.task, DEFAULT.dataset
+STAGES, KERNELS, WIDTHS, ALIGN = DEFAULT.stages, DEFAULT.kernels, DEFAULT.widths, DEFAULT.align
+
+
+def variant(name: str | None = None) -> Variant:
+    if name is None:
+        return DEFAULT
+    try:
+        return VARIANTS[name]
+    except KeyError:
+        raise KeyError(f"no null encoder {name!r}: one of {sorted(VARIANTS)}") from None
+
+
+def head(v: Variant = DEFAULT) -> LatticeMeanHead:
+    return v.head()
 
 
 def padded_extent(n: int, patch: int, align: int = ALIGN) -> int:
@@ -144,38 +186,43 @@ def grid_from_haversack(shape, eff_zyx, origin_xyz, direction_xyz) -> Geometry:
                     origin=tuple(float(v) for v in origin_xyz))
 
 
-def provenance(source: str = "", code: str = "", weights: str = "", **extra) -> Provenance:
-    return Provenance(encoder=NAME, code=code, weights=weights or f"{TASK} (Dataset{DATASET})",
+def provenance(source: str = "", code: str = "", weights: str = "", v: Variant = DEFAULT, **extra) -> Provenance:
+    return Provenance(encoder=v.name, code=code, weights=weights or f"{v.task} (Dataset{v.dataset})",
                       preprocessing=PREPROCESSING, license=LICENSE, source=source,
-                      extra={"stages": list(STAGES), **extra})
+                      extra={"stages": list(v.stages), **extra})
 
 
 # -- the encode: needs haversack (and so torch), imported only here ----------------------------
-def load_model(weights_root=None, device: str = "auto", dtype: str = "fp16"):
-    """``(haversack TorchModel, label map)`` for :data:`TASK`, from weights ALREADY installed -
+def load_model(weights_root=None, device: str = "auto", dtype: str = "fp16", v: Variant = DEFAULT):
+    """``(haversack TorchModel, label map)`` for variant ``v``, from weights ALREADY installed -
     haversack's TotalSegmentator layout (``$TOTALSEG_WEIGHTS_PATH``, else
     ``~/.totalsegmentator/nnunet/results``; on Modal the global ``haversack-weights`` volume).
-    Nothing is fetched: a missing model is haversack's ``ModelNotFound``, naming where it looked."""
+    Nothing is fetched: a missing model is haversack's ``ModelNotFound``, naming where it looked.
+
+    The label map is the MODEL's own (``dataset.json``), not a task's: Dataset 291 is one part of
+    ``total``, whose task map is the union of five. For 297 the two were checked equal on all 117
+    labels (2026-09-22)."""
     from haversack.network import TorchModel
     from haversack.tasks import TaskCatalog, resolve_model_folder, weights_root as _root
-    spec = TaskCatalog("ts").get(TASK.split(":", 1)[1])
+    spec = TaskCatalog("ts").get(v.task.split(":", 1)[1])
     root = _root("ts", weights_root)
-    folder = resolve_model_folder(DATASET, model_root=root, **spec.model_choice(DATASET))
+    folder = resolve_model_folder(v.dataset, model_root=root, **spec.model_choice(v.dataset))
     m = TorchModel(folder, device=device, dtype=dtype)
     if m.transpose_forward != (0, 1, 2):
         raise RuntimeError(f"{folder.name}: a transposed model - the tiling here assumes none")
-    if tuple(m.patch) and any(p % ALIGN for p in m.patch):
-        raise RuntimeError(f"{folder.name}: patch {m.patch} is not a multiple of {ALIGN}")
-    return m, {int(k): str(v) for k, v in spec.label_map.items()}
+    if tuple(m.patch) and any(p % v.align for p in m.patch):
+        raise RuntimeError(f"{folder.name}: patch {m.patch} is not a multiple of {v.align}")
+    labels = {int(val): str(name) for name, val in m.dataset_json["labels"].items() if int(val) != 0}
+    return m, labels
 
 
-def encode(path, model, device=None):
+def encode(path, model, v: Variant = DEFAULT, device=None):
     """CT -> ``(tokens per lattice (N, C) fp16, TS labels on the PADDED model grid, meta)``.
 
-    haversack reads (canonical RAS), resamples (3 mm, corner rule, cubic) and normalizes exactly as
+    haversack reads (canonical RAS), resamples (the model's spacing, corner rule, cubic) and normalizes exactly as
     for a segmentation, and places the model grid (``ranked_output.model_grid_geometry``); this
     tiles the grid padded at its end (:func:`tile_slices`), runs the network once per tile, keeps
-    :data:`STAGES` through a forward hook on the encoder and blends with nnU-Net's Gaussian - per
+    ``v.stages`` through a forward hook on the encoder and blends with nnU-Net's Gaussian - per
     token box for the lattices (:func:`token_weights`), per voxel for the logits whose argmax is the
     native mask. ONE implementation for the Modal cohort tool and the local one."""
     import time
@@ -190,27 +237,27 @@ def encode(path, model, device=None):
                          original_orientation=orient)
     x = normalize_for(grid, m)[0]                                        # (Z, Y, X) float32, normalized
     shape = tuple(int(s) for s in x.shape)
-    padded = tuple(padded_extent(n, p) for n, p in zip(shape, m.patch))
+    padded = tuple(padded_extent(n, p, v.align) for n, p in zip(shape, m.patch))
     xp = torch.zeros(padded, dtype=m.dtype, device=dev)                  # nnU-Net pads with 0 after normalization
     xp[:shape[0], :shape[1], :shape[2]] = x.to(dev, m.dtype)
     gauss = m._gaussian_cpu.double().numpy()
-    W = [torch.as_tensor(token_weights(gauss, k), dtype=torch.float32, device=dev) for k in KERNELS]
+    W = [torch.as_tensor(token_weights(gauss, k), dtype=torch.float32, device=dev) for k in v.kernels]
     G = torch.as_tensor(gauss, dtype=torch.float32, device=dev)
-    acc = [torch.zeros((w, *(p // k for p, k in zip(padded, kk))), device=dev) for w, kk in zip(WIDTHS, KERNELS)]
-    wsum = [torch.zeros(tuple(p // k for p, k in zip(padded, kk)), device=dev) for kk in KERNELS]
+    acc = [torch.zeros((w, *(p // k for p, k in zip(padded, kk))), device=dev) for w, kk in zip(v.widths, v.kernels)]
+    wsum = [torch.zeros(tuple(p // k for p, k in zip(padded, kk)), device=dev) for kk in v.kernels]
     logits = torch.zeros((m.K, *padded), dtype=torch.float16, device=dev)
     seen = {}
     hook = m.net.encoder.register_forward_hook(lambda mod, inp, out: seen.__setitem__("skips", out))
-    tiles = tile_slices(padded, m.patch)
+    tiles = tile_slices(padded, m.patch, v.kernels, v.align)
     t0 = time.time()
     try:
         with torch.inference_mode():
             for vox, toks in tiles:
                 out = m.net(xp[vox][None, None])[0]                      # (K, *patch)
-                for j, stage in enumerate(STAGES):
+                for j, stage in enumerate(v.stages):
                     f = seen["skips"][stage][0].float()
-                    if tuple(f.shape) != (WIDTHS[j], *W[j].shape):
-                        raise RuntimeError(f"stage {stage}: {tuple(f.shape)}, expected {(WIDTHS[j], *W[j].shape)}")
+                    if tuple(f.shape) != (v.widths[j], *W[j].shape):
+                        raise RuntimeError(f"stage {stage}: {tuple(f.shape)}, expected {(v.widths[j], *W[j].shape)}")
                     acc[j][(slice(None), *toks[j])] += f * W[j]
                     wsum[j][toks[j]] += W[j]
                 logits[(slice(None), *vox)] += (out.float() * G).half()  # argmax needs no division
@@ -230,14 +277,14 @@ def encode(path, model, device=None):
     meta = {"grid": {"shape": list(g.shape), "directions": [list(r) for r in g.directions], "origin": list(g.origin)},
             "model_shape": list(shape), "patch": list(m.patch), "tiles": len(tiles), "encode_s": round(encode_s, 2),
             "image_shape": [int(v) for v in arr.shape], "dtype": str(m.dtype).replace("torch.", ""),
-            "centering": centering, "model": m.folder.name}
+            "centering": centering, "model": m.folder.name, "encoder": v.name}
     return tokens, labels, meta
 
 
 def check_against_haversack(path, labels, grid_meta: dict, label_map: dict, weights_root=None,
-                            device: str = "auto", min_ml: float = 20.0) -> dict:
+                            device: str = "auto", min_ml: float = 20.0, v: Variant = DEFAULT) -> dict:
     """The independent test of the grid. Per organ of ``min_ml`` and up: the world centroid of OUR
-    native mask through the field's geometry, against haversack's own ``segment`` of :data:`TASK`
+    native mask through the field's geometry, against haversack's own ``segment`` of ``v.task``
     through SimpleITK's geometry of its label volume - mm apart (LPS), and the volume ratio. Two
     code paths meet only at the CT: a geometry error here is tens of mm, tiling differences a few
     boundary voxels."""
@@ -247,8 +294,11 @@ def check_against_haversack(path, labels, grid_meta: dict, label_map: dict, weig
     g = Geometry(shape=tuple(grid_meta["shape"]), directions=tuple(tuple(r) for r in grid_meta["directions"]),
                  origin=tuple(grid_meta["origin"]))
     ours = organ_mask(labels, label_map)
-    img = segment(str(path), TASK, weights=weights_root, device=device).labels
-    theirs = organ_mask(sitk.GetArrayFromImage(img), label_map)          # (Z, Y, X) on the source grid
+    img = segment(str(path), v.task, weights=weights_root, device=device).labels
+    # the task's labels are ITS map, which for a part model (291 in `total`) is not the model's
+    from haversack.tasks import TaskCatalog
+    task_map = {int(k): str(n) for k, n in TaskCatalog("ts").get(v.task.split(":", 1)[1]).label_map.items()}
+    theirs = organ_mask(sitk.GetArrayFromImage(img), task_map)           # (Z, Y, X) on the source grid
     v_ours = abs(float(np.linalg.det(np.asarray(g.directions, float)))) * 1e-3
     v_theirs = float(np.prod(img.GetSpacing())) * 1e-3
     out = {}
@@ -267,13 +317,15 @@ def check_against_haversack(path, labels, grid_meta: dict, label_map: dict, weig
 def field_from_export(arrays, meta: dict) -> Field:
     """The ``Field`` for what ``tools/null_export_modal.py`` hands back: one token array per kept
     stage, the organ-scheme mask, and a ``meta`` holding the grid in rankfield's form. One
-    function, as for RADAR, because the format must not have two authors."""
+    function, as for RADAR, because the format must not have two authors. ``meta["encoder"]`` names
+    the variant; a meta without one is the first variant's (every field written before 1.5 mm)."""
     from .radar import ORGANS
+    v = variant(meta.get("encoder"))
     g = meta["grid"]
     extra = {k: meta[k] for k in ("model_shape", "patch", "tiles", "encode_s", "haversack", "image_shape",
                                   "dtype", "model", "centering", "device") if k in meta}
-    return Field(tokens=[arrays[f"tokens{j}"] for j in range(len(KERNELS))], kernels=list(KERNELS),
+    return Field(tokens=[arrays[f"tokens{j}"] for j in range(len(v.kernels))], kernels=list(v.kernels),
                  grid=Geometry(shape=tuple(g["shape"]), directions=tuple(tuple(r) for r in g["directions"]),
                                origin=tuple(g["origin"])),
-                 provenance=provenance(source=meta["u"], code=meta.get("haversack", ""), **extra),
+                 provenance=provenance(source=meta["u"], code=meta.get("haversack", ""), v=v, **extra),
                  native_mask=arrays.get("native_mask"), native_labels=ORGANS)
