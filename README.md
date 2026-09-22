@@ -25,8 +25,8 @@ map of pilot scripts still living in the design record. The design record is
 | `feldglas.store` | a field on disk (`feldglas-field 0.1`), with a version gate |
 | `feldglas.gate` | which tokens a region owns and *how much of each*: the raster rule, interior-only, a threshold, soft gates, boxes in millimetres |
 | `feldglas.adapters.radar` | RADAR behind the contract: its head in numpy (one attention layer and a Linear per organ; matched the GPU to 3e-8, 0.2 ms per gate), finding scores, the pilot's fields |
-| `feldglas.adapters.null` | the null model - an anatomy-only encoder through the same suite. A stub, with its plan |
-| `feldglas.heads` | `MeanPoolHead`, for encoders that bring no head |
+| `feldglas.adapters.null` | the null model - TotalSegmentator's `total_fast` encoder (never shown a report) through the same suite; encode with `tools/null_export_modal.py` |
+| `feldglas.heads` | `MeanPoolHead`, for encoders that bring no head; `LatticeMeanHead`, for lattices of different widths (one vote per lattice) |
 | `feldglas.observe` | detection theory on the channels: a `NormalModel` (the unremarkable), Hotelling templates, a bank for an unknown parameter |
 | `feldglas.remote` | fields on a shared object store: the blobs are [provender](https://github.com/mhalle/provender)'s, the manifest that names them is ours |
 | `feldglas.suite` | the characterization suite: a registry of probes and where each stands; `gateability` runs here |
