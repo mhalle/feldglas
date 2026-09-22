@@ -83,8 +83,6 @@ class Field:
             want = int(np.prod(self.lattice_shape(j)))
             if t.ndim != 2 or t.shape[0] != want:
                 raise ValueError(f"lattice {j}: {t.shape} tokens for a lattice of {self.lattice_shape(j)} = {want}")
-        if len({t.shape[1] for t in self.tokens}) != 1:
-            raise ValueError(f"lattices disagree on channels: {[t.shape[1] for t in self.tokens]}")
         if self.native_mask is not None and tuple(self.native_mask.shape) != tuple(self.grid.shape):
             raise ValueError(f"native mask {self.native_mask.shape} is not on the model grid {self.grid.shape}")
 
@@ -94,8 +92,20 @@ class Field:
         return len(self.tokens)
 
     @property
+    def widths(self) -> tuple[int, ...]:
+        """Channels per lattice. RADAR projects every lattice to 256; an encoder with no learned
+        projection hands over its skips as they are (the null model: 128 / 256 / 320)."""
+        return tuple(int(t.shape[1]) for t in self.tokens)
+
+    @property
+    def uniform(self) -> bool:
+        return len(set(self.widths)) == 1
+
+    @property
     def channels(self) -> int:
-        return int(self.tokens[0].shape[1])
+        """The width of :meth:`all_tokens`: the lattices' common width, or their SUM when they
+        differ (each lattice in its own block of channels)."""
+        return self.widths[0] if self.uniform else sum(self.widths)
 
     def lattice_shape(self, j: int) -> tuple[int, int, int]:
         return tuple(s // k for s, k in zip(self.grid.shape, self.kernels[j]))
@@ -107,8 +117,26 @@ class Field:
         return np.cumsum([0] + [int(np.prod(self.lattice_shape(j))) for j in range(self.lattices)])
 
     def all_tokens(self, dtype=np.float32) -> np.ndarray:
-        """Every token, lattices concatenated - what a head's ``prepare`` takes."""
-        return np.concatenate([np.asarray(t, dtype) for t in self.tokens])
+        """Every token, lattices concatenated - what a head's ``prepare`` takes.
+
+        Lattices of different widths (2026-09-22, the null model - the contract's first growth
+        from a second adapter) are laid side by side in CHANNELS as well as rows: lattice ``j``'s
+        tokens fill columns ``block(j)`` and are zero elsewhere, so no two lattices' channels are
+        ever added together - their channels mean different things. ``heads.LatticeMeanHead``
+        pools such a field block by block."""
+        if self.uniform:
+            return np.concatenate([np.asarray(t, dtype) for t in self.tokens])
+        out = np.zeros((int(self.offsets[-1]), self.channels), dtype)
+        for j, t in enumerate(self.tokens):
+            out[self.offsets[j]:self.offsets[j + 1], self.block(j)] = t
+        return out
+
+    def block(self, j: int) -> slice:
+        """Lattice ``j``'s columns in :meth:`all_tokens` (every column when the widths agree)."""
+        if self.uniform:
+            return slice(0, self.channels)
+        lo = sum(self.widths[:j])
+        return slice(lo, lo + self.widths[j])
 
     # -- place --------------------------------------------------------------------------
     def lattice_geometry(self, j: int) -> Geometry:
