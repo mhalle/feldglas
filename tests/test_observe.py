@@ -56,8 +56,8 @@ class Normal(unittest.TestCase):
         within, total = NormalModel.fit(X, groups=groups), NormalModel.fit(X)
         self.assertTrue(within.within_groups); self.assertFalse(total.within_groups)
         ref = X[groups == 0].mean(0)
-        self.assertGreater(np.median(within.distance(X[groups == 0], centre=ref)),
-                           3 * np.median(total.distance(X[groups == 0], centre=ref)))
+        self.assertGreater(np.median(within.distance(X[groups == 0], center=ref)),
+                           3 * np.median(total.distance(X[groups == 0], center=ref)))
 
     def test_save_and_load(self):
         m = NormalModel.fit(cloud()[0], label="liver box32 venous")

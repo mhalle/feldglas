@@ -5,7 +5,7 @@ perfectly well and then draws the finding on the wrong organ. The exporter place
 in the world from the image's affine, the resample and the crop; this checks that placement
 against an INDEPENDENT source - the centroids haversack's `statistics.json` reports (RAS mm) for
 the same series, from a different network, on a different grid, through a different resampler.
-Two segmentations of one organ disagree by millimetres; a geometry error is tens of them.
+Two segmentations of one organ disagree by millimeters; a geometry error is tens of them.
 
 Run:  uv run python tools/check_geometry.py [field.npz ...]
       (default: every field under the radar cache; statistics from medseg's study folder)

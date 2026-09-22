@@ -128,7 +128,10 @@ def regions(u: str, digest: str, pid: str, coll: str, phase: str, seg_series: st
                 meta["tumor_ml"] = float(tumor.sum() * src_ml)
                 meta["tumor_ml_on_model_grid"] = float(occ.sum() * voxel_ml)
 
-            T = {"organ": [], "size": [], "rule": [], "centre": [], "ijk": [], "fill": [], "organ_ml": [],
+            # "center" since 2026-09-22 (American spelling); the region files already on both work
+            # volumes say "centre" (spelling: allow centre). Nothing reads the key back today - a reader that will
+            # must accept both.
+            T = {"organ": [], "size": [], "rule": [], "center": [], "ijk": [], "fill": [], "organ_ml": [],
                  "coords": [], "tumor_ml": [], "vec": []}
             overlaps, base, skipped = [], 0, []
             target = TARGET.get(coll, (None,))[0]
@@ -144,12 +147,12 @@ def regions(u: str, digest: str, pid: str, coll: str, phase: str, seg_series: st
                     meta["tumor_in_radar_organ"] = float(occ[organ].sum() / max(occ.sum(), 1e-9))
                 for size in SIZES + ((16,) if name in SMALL else ()):
                     sw = na.sweep(field, organ, float(size))
-                    if not len(sw.centre) or len(sw.centre) > MAX_BOXES:
-                        if len(sw.centre):
-                            skipped.append([name, size, len(sw.centre)])
+                    if not len(sw.center) or len(sw.center) > MAX_BOXES:
+                        if len(sw.center):
+                            skipped.append([name, size, len(sw.center)])
                         continue
                     tum = (na.box_sums(occ_table, sw.lo, sw.hi) * voxel_ml if name == target
-                           else np.zeros(len(sw.centre)))
+                           else np.zeros(len(sw.center)))
                     ov = na.lesion_overlaps(sw, occ, owner, voxel_ml) if name == target else np.zeros((0, 3))
                     for r, rule in enumerate(("any", 0.5)[:2 if (name in HALF_RULE and size == 32) else 1]):
                         X = na.pool_sweep(field, head, prepared, sw, organ, name, rule=rule)
@@ -161,7 +164,7 @@ def regions(u: str, digest: str, pid: str, coll: str, phase: str, seg_series: st
                             overlaps.append(o2)
                         n_ok = int(ok.sum()); base += n_ok
                         T["organ"].append(np.full(n_ok, int(val), np.int8)); T["size"].append(np.full(n_ok, size, np.int16))
-                        T["rule"].append(np.full(n_ok, r, np.int8)); T["centre"].append(sw.centre[ok].astype(np.int16))
+                        T["rule"].append(np.full(n_ok, r, np.int8)); T["center"].append(sw.center[ok].astype(np.int16))
                         T["ijk"].append(sw.ijk[ok].astype(np.int16)); T["fill"].append(sw.fill[ok].astype(np.float32))
                         T["organ_ml"].append(sw.organ_ml[ok].astype(np.float32)); T["coords"].append(sw.coords[ok].astype(np.float32))
                         T["tumor_ml"].append(tum[ok].astype(np.float32)); T["vec"].append(X[ok].astype(np.float16))
@@ -265,7 +268,7 @@ def analyze(seed: int = 0) -> str:
              "maha_positioned": lambda V, s, k: pos.distance(V, s["coords"][k]),
              "maha_positioned_fill": lambda V, s, k: posfill.distance(V, s["coords"][k], s["fill"][k]),
              "euclid_own_mean": lambda V, s, k: np.linalg.norm(V - V.mean(0), axis=1),
-             "maha_own_median_donor_within": lambda V, s, k: within.distance(V, centre=np.median(V, 0)),
+             "maha_own_median_donor_within": lambda V, s, k: within.distance(V, center=np.median(V, 0)),
              "radar_target_finding": lambda V, s, k: finding(V, fname),
              "radar_any_finding_of_organ": lambda V, s, k: np.max([finding(V, n) for n in family], 0)}
         if not text:                                      # an encoder with no vocabulary
@@ -428,12 +431,12 @@ def tails(size: int = 32) -> str:
                        np.maximum(w, (1.4826 * np.median(np.abs(Zo - med), 0)) ** 2))
         R["site_to_donor_spread_ratio_axes_0-16_16-64_64-256"] = [
             round(float(np.sqrt(site[0][1][a:b] / w[a:b]).mean()), 2) for a, b in ((0, 16), (16, 64), (64, 256))]
-        R["detectors"]["maha_site_scaled_donor_centre"], _ = run(lambda Z: np.sqrt((Z ** 2 / site[fold[cur["i"]]][1]).sum(1)))
-        R["detectors"]["maha_site_scaled_site_centre"], _ = run(
+        R["detectors"]["maha_site_scaled_donor_center"], _ = run(lambda Z: np.sqrt((Z ** 2 / site[fold[cur["i"]]][1]).sum(1)))
+        R["detectors"]["maha_site_scaled_site_center"], _ = run(
             lambda Z: np.sqrt(((Z - site[fold[cur["i"]]][0]) ** 2 / site[fold[cur["i"]]][2]).sum(1)))
         R["detectors"]["euclid"], _ = run(lambda Z: np.linalg.norm(Z, axis=1))
         R["detectors"]["euclid_scanwise"], _ = run(lambda Z: scanwise(np.linalg.norm(Z, axis=1)))
-        R["detectors"]["maha_full_centred_on_scan_median"], _ = run(lambda Z: np.sqrt((((Z - np.median(Z, 0)) ** 2) / w).sum(1)))
+        R["detectors"]["maha_full_centered_on_scan_median"], _ = run(lambda Z: np.sqrt((((Z - np.median(Z, 0)) ** 2) / w).sum(1)))
         # the tail itself, for the full Mahalanobis: the top (1 per scan) clean local maxima
         _, fs = run(lambda Z: np.sqrt((Z ** 2 / w).sum(1)))
         rows = []

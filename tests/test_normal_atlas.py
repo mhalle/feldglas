@@ -16,9 +16,9 @@ class TestSweep(unittest.TestCase):
 
     def test_fill_and_volume_match_a_box_drawn_the_slow_way(self):
         sw = na.sweep(self.field, self.organ, 32.0)
-        self.assertGreater(len(sw.centre), 4)
-        for i in range(len(sw.centre)):
-            b = box(self.field, sw.centre[i], 32.0)
+        self.assertGreater(len(sw.center), 4)
+        for i in range(len(sw.center)):
+            b = box(self.field, sw.center[i], 32.0)
             self.assertAlmostEqual(sw.fill[i], (b & self.organ).sum() / b.sum(), places=9)
             self.assertAlmostEqual(sw.organ_ml[i], (b & self.organ).sum() * 5.0 / 1000.0, places=9)
             self.assertGreaterEqual(sw.fill[i], 0.25)
@@ -26,15 +26,15 @@ class TestSweep(unittest.TestCase):
     def test_every_box_the_rule_admits_is_there(self):
         sw = na.sweep(self.field, self.organ, 32.0, min_fill=0.0)
         kept = na.sweep(self.field, self.organ, 32.0, min_fill=0.5)
-        self.assertEqual(len(kept.centre), int((sw.fill >= 0.5).sum()))
+        self.assertEqual(len(kept.center), int((sw.fill >= 0.5).sum()))
         self.assertTrue((kept.coords >= 0).all() and (kept.coords <= 1).all())
 
     def test_pooled_vectors_are_the_ones_select_gives(self):
         head = MeanPoolHead(); prepared = head.prepare(self.field.all_tokens())
         sw = na.sweep(self.field, self.organ, 32.0)
         X = na.pool_sweep(self.field, head, prepared, sw, self.organ, None)
-        for i in (0, len(sw.centre) // 2, len(sw.centre) - 1):
-            g = select(self.field, box(self.field, sw.centre[i], 32.0), within=self.organ)
+        for i in (0, len(sw.center) // 2, len(sw.center) - 1):
+            g = select(self.field, box(self.field, sw.center[i], 32.0), within=self.organ)
             np.testing.assert_allclose(X[i], head.pool(prepared, g.index), atol=1e-6)
 
     def test_one_scan_against_a_normal_model(self):
@@ -46,11 +46,11 @@ class TestSweep(unittest.TestCase):
         cloud = X.mean(0) + 0.05 * rng.standard_normal((600, X.shape[1]))
         for model in (NormalModel.fit(cloud), na.PositionedNormal.fit(cloud, rng.random((600, 3)), rng.random(600))):
             sw2, d = na.normal_atlas(self.field, head, self.organ, None, model, 32.0)
-            self.assertEqual(len(d), len(sw2.centre)); self.assertTrue(np.isfinite(d).all() and (d > 0).all())
+            self.assertEqual(len(d), len(sw2.center)); self.assertTrue(np.isfinite(d).all() and (d > 0).all())
 
     def test_an_empty_organ_is_an_empty_sweep(self):
         sw = na.sweep(self.field, np.zeros(self.field.grid.shape, bool), 32.0)
-        self.assertEqual(len(sw.centre), 0)
+        self.assertEqual(len(sw.center), 0)
 
 
 class TestScatter(unittest.TestCase):

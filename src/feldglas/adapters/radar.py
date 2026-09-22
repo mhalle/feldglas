@@ -42,11 +42,11 @@ ORGANS = ("adrenal gland", "aorta", "erector spinae muscle", "brain", "clavicle"
           "iliac artery", "iliac vein", "iliopsoas muscle", "inferior vena cava", "kidney", "liver", "lung",
           "pancreas", "portal vein", "pulmonary artery", "rib", "sacrum", "scapula", "small bowel", "spleen",
           "stomach", "trachea", "bladder", "cervical vertebrae", "lumbar vertebrae", "thoracic vertebrae")
-#: Where a token LOOKS, against the centre of its own box: the centroid of the token change a
+#: Where a token LOOKS, against the center of its own box: the centroid of the token change a
 #: painted sphere causes, minus the sphere's place, in mm along the model grid's (Z, Y, X) =
 #: patient (superior, anterior, left). Measured 2026-09-20 (tools/radar_export_modal.py::phantom,
 #: 11 spheres in 3 livers; spreads 0.3-0.4 / 1.0-1.3 / 3.6-4.9 mm). Every offset is POSITIVE: a
-#: strided convolution centres its output on the first of the voxels it replaces, so a token sees
+#: strided convolution centers its output on the first of the voxels it replaces, so a token sees
 #: a point a little toward index 0 of where its box is drawn - 14-18 % of a token's width. Not
 #: applied anywhere yet; a map that wants to be sharper than that should shift each lattice by it.
 #: (The same check put the GRID itself within 0.10 mm of where a sphere was painted, so the

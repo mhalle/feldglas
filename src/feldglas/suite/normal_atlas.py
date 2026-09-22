@@ -13,7 +13,7 @@ scan share them:
   sweep / pool_sweep   boxes of one size over one organ, at half-box steps on a regular lattice
                        (the lattice index is kept: it is what makes "local maximum" mean something)
   scatter_mask         an expert mask on ITS grid -> occupancy on the model grid, by scattering
-                       sub-voxel samples; nearest-neighbour resampling loses a 6 mm lesion between
+                       sub-voxel samples; nearest-neighbor resampling loses a 6 mm lesion between
                        5 mm slices, and the occupancy is also what a volume in ml is summed from
   PositionedNormal     a normal model whose MEAN depends on where in the organ a box sits (and how
                        full of organ it is): the dome, the hilum and a box half outside the organ
@@ -37,11 +37,11 @@ ML_PER_MM3 = 1e-3
 
 
 # -- boxes ------------------------------------------------------------------------------------
-def _edges(centres: np.ndarray, size_mm: float, spacing, shape):
-    """The same slices ``gate._box_slices`` cuts, for many centres at once."""
+def _edges(centers: np.ndarray, size_mm: float, spacing, shape):
+    """The same slices ``gate._box_slices`` cuts, for many centers at once."""
     half = np.asarray([size_mm / s / 2.0 for s in spacing])
-    lo = np.maximum((centres - half).astype(np.int64), 0)
-    hi = np.minimum((centres + half).astype(np.int64) + 1, np.asarray(shape))
+    lo = np.maximum((centers - half).astype(np.int64), 0)
+    hi = np.minimum((centers + half).astype(np.int64) + 1, np.asarray(shape))
     return lo, hi
 
 
@@ -60,10 +60,10 @@ def box_sums(table: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
 @dataclass
 class Sweep:
     """Boxes of one size over one organ. ``ijk`` is each box's place on the sweep's own regular
-    lattice; ``coords`` its centre in the organ's bounding box, 0..1 along (Z, Y, X)."""
+    lattice; ``coords`` its center in the organ's bounding box, 0..1 along (Z, Y, X)."""
 
     size_mm: float
-    centre: np.ndarray          # (N, 3) model-grid index
+    center: np.ndarray          # (N, 3) model-grid index
     ijk: np.ndarray             # (N, 3)
     lo: np.ndarray
     hi: np.ndarray
@@ -85,22 +85,22 @@ def sweep(field: Field, organ: np.ndarray, size_mm: float, min_fill: float = 0.2
     stride = np.maximum(np.round(size_mm * step / np.asarray(sp)), 1).astype(int)
     axes = [np.arange(a, b + 1, s) for a, b, s in zip(b0, b1, stride)]
     ijk = np.stack(np.meshgrid(*[np.arange(len(a)) for a in axes], indexing="ij"), -1).reshape(-1, 3)
-    centre = np.stack([axes[d][ijk[:, d]] for d in range(3)], 1)
-    lo, hi = _edges(centre, size_mm, sp, organ.shape)
+    center = np.stack([axes[d][ijk[:, d]] for d in range(3)], 1)
+    lo, hi = _edges(center, size_mm, sp, organ.shape)
     vox = np.prod(hi - lo, 1)
     n = box_sums(integral(organ), lo, hi)
     keep = n >= min_fill * vox
     span = np.maximum(b1 - b0, 1)
-    return Sweep(size_mm, centre[keep], ijk[keep], lo[keep], hi[keep], (n / vox)[keep],
-                 n[keep] * float(np.prod(sp)) * ML_PER_MM3, ((centre - b0) / span)[keep])
+    return Sweep(size_mm, center[keep], ijk[keep], lo[keep], hi[keep], (n / vox)[keep],
+                 n[keep] * float(np.prod(sp)) * ML_PER_MM3, ((center - b0) / span)[keep])
 
 
 def pool_sweep(field: Field, head, prepared, sw: Sweep, organ: np.ndarray, query, rule="any") -> np.ndarray:
     """One vector per box, pooled on the ORGAN's tokens inside it. A box with no token under
     ``rule`` gets a row of NaN, so rows stay aligned with the sweep."""
     within = occupancies(field, organ)
-    out = np.full((len(sw.centre), field.channels), np.nan, np.float32)
-    for i, c in enumerate(sw.centre):
+    out = np.full((len(sw.center), field.channels), np.nan, np.float32)
+    for i, c in enumerate(sw.center):
         g = box_gate(field, c, sw.size_mm, rule=rule, within=within)
         if len(g):
             out[i] = head.pool(prepared, g.index, query)
@@ -128,7 +128,7 @@ def normal_atlas(field: Field, head, organ: np.ndarray, query, normal, size_mm: 
 def scatter_mask(field: Field, labels: np.ndarray, affine_lps: np.ndarray, sub: int = 2):
     """``labels`` (an integer volume, 0 = nothing, on a grid whose index -> LPS mm map is the 4x4
     ``affine_lps``) as ``(occupancy, owner)`` on the model grid: the fraction of each model voxel
-    that is labelled, and which label gave it most. Each source voxel is split into ``sub``^3
+    that is labeled, and which label gave it most. Each source voxel is split into ``sub``^3
     samples and each sample dropped into the model voxel it falls in."""
     shape = field.grid.shape
     occ = np.zeros(int(np.prod(shape)), np.float64)
@@ -220,8 +220,8 @@ def auc(scores, positive) -> float:
 
 
 def local_maxima(ijk: np.ndarray, scores: np.ndarray) -> np.ndarray:
-    """Which boxes score at least as high as all 26 neighbours on the sweep's lattice (a missing
-    neighbour never wins). These are the DETECTIONS: a threshold crossed by a ridge of forty
+    """Which boxes score at least as high as all 26 neighbors on the sweep's lattice (a missing
+    neighbor never wins). These are the DETECTIONS: a threshold crossed by a ridge of forty
     overlapping boxes is one finding, not forty."""
     if not len(ijk):
         return np.zeros(0, bool)

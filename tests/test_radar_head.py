@@ -55,7 +55,7 @@ class Arithmetic(unittest.TestCase):
             np.testing.assert_allclose(head.pool(prepared, idx, organ), want, atol=2e-5)
             np.testing.assert_allclose(head.attention(prepared, idx, organ), att[0, :, 0].T.numpy(), atol=1e-5)
 
-    def test_a_soft_gate_moves_weight_toward_the_tokens_it_favours(self):
+    def test_a_soft_gate_moves_weight_toward_the_tokens_it_favors(self):
         head = radar.RadarHead(random_head())
         tokens = np.random.default_rng(2).standard_normal((40, 256)).astype(np.float32)
         prepared, idx = head.prepare(tokens), np.arange(40)

@@ -1,7 +1,7 @@
 """Can RAW tokens carry a place from one patient to another? Tested against INDEPENDENT landmarks.
 
 `radar_space_modal.py` found that a raw token reads its structure at 0.77-0.82 and lands, by
-nearest neighbour, ~5 cm from itself in another patient - but against RADAR's OWN mask, which the
+nearest neighbor, ~5 cm from itself in another patient - but against RADAR's OWN mask, which the
 same encoder produced. Here the truth is haversack's: `ts.v2:total` label maps of the same series,
 left by the validation study on the Modal volume `haversack-radar-val-cache` (read-only here, and
 read with the standard library - a `.seg.nrrd` is a text header and a gzip block). Their centroids
@@ -18,7 +18,7 @@ scan stops, are left out.
                                          anywhere in B (cosine; raw, and standardized within each scan)
                   coarse-to-fine         deep anywhere, mid within 60 mm of that, fine within 30 mm
                   affine + mid / fine    BOTH: the most similar token within 40 / 25 mm of the affine guess
-                  floor                  the nearest token centre to B's landmark - what the lattice allows
+                  floor                  the nearest token center to B's landmark - what the lattice allows
                 error = distance to B's own landmark, in mm
   ::bodycoord   a body coordinate read off one sampled token: vertebral level (T8 = 8 ... L1 = 13 ...
                 S1 = 18, continuous) and mm left and posterior of the spine at that level
@@ -156,7 +156,7 @@ def match(q: str, refs: list) -> bytes:
             Z = (T - T.mean(0)) / (T.std(0) + 1e-6)                                   # standardized WITHIN the scan
             lat.append({"raw": T / (np.linalg.norm(T, axis=1, keepdims=True) + 1e-9),
                         "std": Z / (np.linalg.norm(Z, axis=1, keepdims=True) + 1e-9),
-                        "centres": f.token_centres(j).astype(np.float32), "shape": f.lattice_shape(j), "kernel": np.asarray(k)})
+                        "centers": f.token_centers(j).astype(np.float32), "shape": f.lattice_shape(j), "kernel": np.asarray(k)})
         meta = json.loads(pathlib.Path(f"/work/landmarks/{u}.json").read_text())
         return {"lat": lat, "inv": inv, "org": org, "lm": _usable(meta["landmarks"]), "coll": meta["coll"], "pid": meta["pid"]}
 
@@ -194,7 +194,7 @@ def match(q: str, refs: list) -> bytes:
                     if j:
                         e[f"affine+{lname}"] = np.nan
                     continue
-                cen = B["lat"][j]["centres"]
+                cen = B["lat"][j]["centers"]
                 for kind in ("raw", "std"):
                     sim = B["lat"][j][kind] @ A["lat"][j][kind][t]
                     e[f"{lname}_{kind}"] = np.linalg.norm(cen[sim.argmax()] - XB[i])

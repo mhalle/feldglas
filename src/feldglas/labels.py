@@ -46,8 +46,8 @@ class LabelMap:
                            + (f" (it has {', '.join(near)})" if near else f" ({len(self.names)} structures)")) from None
 
     def on_grid(self, grid: Geometry) -> "GridLabels":
-        """The label under the CENTRE of every voxel of ``grid`` (0 outside the map): a nearest-
-        neighbour pull, a slab at a time so a 12 M voxel model grid costs megabytes. Gates take
+        """The label under the CENTER of every voxel of ``grid`` (0 outside the map): a nearest-
+        neighbor pull, a slab at a time so a 12 M voxel model grid costs megabytes. Gates take
         each token's OCCUPANCY from this, so a voxel-level nearest choice is averaged over the
         hundreds to thousands of model voxels a token holds."""
         inv = np.linalg.inv(np.asarray(self.affine_lps, np.float64))

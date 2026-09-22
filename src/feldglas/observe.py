@@ -10,7 +10,7 @@ or a variant is a SIGNAL (the displacement it causes). What the user knows decid
 
 What 2026-09-20's tests established, and this module encodes:
 
-- The failures of "novelty" in the RADAR study were failures of the CENTRE, not of the idea.
+- The failures of "novelty" in the RADAR study were failures of the CENTER, not of the idea.
   Distance from a POPULATION's normal mean repaired every one (kidney at 64 mm: 0.000 -> 1.00
   per patient), and a normal model from six healthy donors of another collection found
   tumor-bearing liver regions at 0.909 pooled AUC against 0.816 for RADAR's own finding score.
@@ -29,7 +29,7 @@ import numpy as np
 
 
 def shrunk_covariance(X: np.ndarray) -> tuple[np.ndarray, float]:
-    """Ledoit-Wolf covariance of CENTRED rows, and the shrinkage it chose. Region vectors are
+    """Ledoit-Wolf covariance of CENTERED rows, and the shrinkage it chose. Region vectors are
     unit length in a few hundred dimensions, so the sample covariance is rank-deficient by
     construction and the shrinkage is what makes it invertible. Same estimator as scikit-learn's
     (tests hold the two together), written out so the core needs only numpy."""
@@ -75,10 +75,10 @@ class NormalModel:
         return cls(mean=mean, precision=np.linalg.inv(C), n=int(len(X)), shrinkage=s,
                    within_groups=groups is not None, label=label)
 
-    def distance(self, X, centre=None) -> np.ndarray:
-        """Mahalanobis distance from ``centre`` - the model's own mean, or a reference the user
+    def distance(self, X, center=None) -> np.ndarray:
+        """Mahalanobis distance from ``center`` - the model's own mean, or a reference the user
         supplies (the mean of a few "this is normal" regions of THIS scan)."""
-        D = np.atleast_2d(np.asarray(X, np.float64)) - (self.mean if centre is None else np.asarray(centre, np.float64))
+        D = np.atleast_2d(np.asarray(X, np.float64)) - (self.mean if center is None else np.asarray(center, np.float64))
         # ((D @ P) * D).sum(1), not einsum("ij,jk,ik->i"): unoptimized, einsum runs the three
         # operands as one single-threaded C loop with no BLAS - 156x slower at 704 dimensions
         # (5.6 s against 0.036 s for 8,000 boxes; equal to 2e-15), and it was the whole of the
@@ -100,7 +100,7 @@ class NormalModel:
 
 def hotelling_template(normal: NormalModel, displacements) -> np.ndarray:
     """The matched filter for a KNOWN signal: ``S^-1 d``, with ``d`` the mean displacement the
-    signal causes (lesion region minus that patient's clean centre; or painted minus unpainted).
+    signal causes (lesion region minus that patient's clean center; or painted minus unpainted).
     Score a region as ``(v - reference) @ template``."""
     return normal.precision @ np.asarray(displacements, np.float64).reshape(-1, normal.mean.size).mean(0)
 

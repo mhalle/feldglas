@@ -36,7 +36,7 @@ class Gates(unittest.TestCase):
         np.testing.assert_allclose(g.soft_bias(), np.log(g.occupancy))
         self.assertTrue(np.all(g.only(2).lattice == 2)); self.assertEqual(len(g.only(0, 1, 2)), len(g))
 
-    def test_a_box_is_millimetres_not_voxels(self):
+    def test_a_box_is_millimeters_not_voxels(self):
         f = make_field()                                   # 5 x 1 x 1 mm voxels
         m = box(f, (8, 32, 32), 20.0)
         z, y, x = (np.ptp(np.nonzero(m)[a]) + 1 for a in range(3))
@@ -57,7 +57,7 @@ class FastBoxes(unittest.TestCase):
         within = occupancies(f, organ)
         rng = np.random.default_rng(0)
         for _ in range(40):
-            c = [rng.uniform(0, s) for s in f.grid.shape]            # off-lattice centres, some at the edge
+            c = [rng.uniform(0, s) for s in f.grid.shape]            # off-lattice centers, some at the edge
             mm = float(rng.choice([8.0, 16.0, 32.0, 64.0]))
             for rule in ("any", "interior", 0.5):
                 for w_slow, w_fast in ((None, None), (organ, within)):

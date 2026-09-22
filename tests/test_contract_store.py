@@ -15,15 +15,15 @@ class Contract(unittest.TestCase):
         self.assertEqual(f.offsets.tolist(), [0, 8, 72, 584])
         self.assertEqual(f.all_tokens().shape, (584, 256))
 
-    def test_a_token_centre_is_the_centre_of_its_box_in_the_world(self):
+    def test_a_token_center_is_the_center_of_its_box_in_the_world(self):
         # the geometry is the part that fails silently: check it two independent ways
         f = make_field()
         for j, k in enumerate(KERNELS):
-            centres = f.token_centres(j).reshape(*f.lattice_shape(j), 3)
+            centers = f.token_centers(j).reshape(*f.lattice_shape(j), 3)
             a, b, c = (s - 1 for s in f.lattice_shape(j))                       # the LAST token
             lo = np.array([a * k[0], b * k[1], c * k[2]], float)
-            box_centre = lo + (np.array(k) - 1) / 2.0                           # model index of its box's centre
-            np.testing.assert_allclose(centres[a, b, c], f.grid.world(box_centre), atol=1e-9)
+            box_center = lo + (np.array(k) - 1) / 2.0                           # model index of its box's center
+            np.testing.assert_allclose(centers[a, b, c], f.grid.world(box_center), atol=1e-9)
         # and the spacing of a lattice is the model grid's times the kernel
         np.testing.assert_allclose(f.lattice_geometry(0).spacing, (40.0, 32.0, 32.0))
 

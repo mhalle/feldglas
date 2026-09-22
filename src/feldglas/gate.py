@@ -100,21 +100,21 @@ def select(field: Field, mask: np.ndarray, rule="any", within=None) -> Gate:
                 np.concatenate(lat).astype(np.int8))
 
 
-def _box_slices(field: Field, centre, size_mm: float):
+def _box_slices(field: Field, center, size_mm: float):
     half = [size_mm / s / 2.0 for s in field.grid.spacing]
-    return tuple(slice(max(int(c - h), 0), min(int(c + h) + 1, n)) for c, h, n in zip(centre, half, field.grid.shape))
+    return tuple(slice(max(int(c - h), 0), min(int(c + h) + 1, n)) for c, h, n in zip(center, half, field.grid.shape))
 
 
-def box(field: Field, centre, size_mm: float) -> np.ndarray:
-    """A cube of ``size_mm`` about ``centre`` (a model-grid index, Z Y X), as a mask on the model
-    grid - clipped at the grid's edge. Sizes are millimetres because the model grid is
+def box(field: Field, center, size_mm: float) -> np.ndarray:
+    """A cube of ``size_mm`` about ``center`` (a model-grid index, Z Y X), as a mask on the model
+    grid - clipped at the grid's edge. Sizes are millimeters because the model grid is
     anisotropic (RADAR's is 5 x 1 x 1 mm) and a cube in voxels is a slab in the patient."""
     m = np.zeros(field.grid.shape, bool)
-    m[_box_slices(field, centre, size_mm)] = True
+    m[_box_slices(field, center, size_mm)] = True
     return m
 
 
-def box_gate(field: Field, centre, size_mm: float, rule="any", within=None) -> Gate:
+def box_gate(field: Field, center, size_mm: float, rule="any", within=None) -> Gate:
     """``select(field, box(...))`` without touching the model grid: a box's occupancy of a token
     is the product of three one-dimensional overlaps, so only the tokens it reaches are visited.
     This is the interactive path - a box under the cursor, a sweep of thousands - and with
@@ -123,7 +123,7 @@ def box_gate(field: Field, centre, size_mm: float, rule="any", within=None) -> G
     keep = _rule(rule)
     if within is not None and not isinstance(within, list):
         within = occupancies(field, within)
-    sl = _box_slices(field, centre, size_mm)
+    sl = _box_slices(field, center, size_mm)
     idx, occ, lat = [], [], []
     for j, (k, off) in enumerate(zip(field.kernels, field.offsets[:-1])):
         shape = field.lattice_shape(j)

@@ -15,7 +15,7 @@ upstream's own DataFolder on every scan; about 1e-5), and the head's exactness i
 What is new is the geometry: the pilot's fields could be gated and pooled but not drawn on the
 patient. Here the model grid is placed in the world from the LAS image's affine, the resample
 (``align_corners=False``: output o reads input (o + 0.5) * in / out - 0.5) and the crop, written
-in rankfield's form - LPS millimetres, one direction row per array axis.
+in rankfield's form - LPS millimeters, one direction row per array axis.
 
 Needs: a clone of upstream at 9319f36 (``$RADAR_REPO``, default ``../medseg/upstream/damo-radar``),
 the Modal volumes of the RADAR study (``radar-idc-validation`` holds the CTs as ``/ct/<uuid>.nii.gz``,
@@ -191,9 +191,9 @@ class Export:
                 model grid), carried to the world through the exported geometry, against where it
                 was painted. No network involved: this is the affine, the resample and the crop.
         tokens  per lattice, the centroid of the token CHANGE against the site, along the model
-                axes. A strided convolution (kernel 3, stride 2, padding 1) centres output i on
+                axes. A strided convolution (kernel 3, stride 2, padding 1) centers output i on
                 input 2i, not on the middle of the two voxels it replaces, so a token may look at
-                a point offset from the centre of its own box - which a map has to know.
+                a point offset from the center of its own box - which a map has to know.
         """
         import nibabel as nib, numpy as np, torch
         from nibabel.orientations import io_orientation, axcodes2ornt, ornt_transform
@@ -247,8 +247,8 @@ class Export:
                 for j, (kk, shp) in enumerate(zip(KERN, shapes)):
                     ch = (torch.linalg.norm(t2[j] - toks[j], dim=1) ** 2).cpu().numpy()
                     ti = np.stack(np.unravel_index(np.arange(ch.size), shp), -1)
-                    centre = (ti + 0.5) * np.array(kk) - 0.5                      # each token's box centre, model index
-                    c = (centre * ch[:, None]).sum(0) / ch.sum()
+                    center = (ti + 0.5) * np.array(kk) - 0.5                      # each token's box center, model index
+                    c = (center * ch[:, None]).sum(0) / ch.sum()
                     lat.append(((c - site_model) * vox).round(2).tolist())        # mm along model (Z, Y, X)
                 out["sites"].append({"grid_error_mm": round(float(np.linalg.norm(found_lps - true_lps)), 3),
                                      "grid_error_lps_mm": (found_lps - true_lps).round(3).tolist(),

@@ -18,7 +18,7 @@ here, which a lesion cohort alone never allows. One CPU container, numpy only, J
                muscle? If so the acquisition can be read off organs nobody is asking about and
                subtracted - tested directly: per-lesion FROC with the shift estimated from OTHER
                organs of the same scan, and with an oracle shift (the target organ's own clean mean)
-  place        nearest neighbour of a box in OTHER patients: how far away in the organ does it
+  place        nearest neighbor of a box in OTHER patients: how far away in the organ does it
                land, against a random box? within the donors, and from another site into them
   axes         the donors' leading liver axes against everything known about a box
 
@@ -199,7 +199,7 @@ def space(series: dict, size: int = 32, seed: int = 0) -> str:
             for j, P in enumerate(ridge(V[dk], C[dk], V[ok_]).T)]
         if name == "kidney":
             RO["side (x < 0.5) donors"] = classify(V[dk], (C[dk][:, 2] < 0.5).astype(int), pid[si[dk]])
-        # -- place: nearest neighbour in OTHER patients ------------------------------------------
+        # -- place: nearest neighbor in OTHER patients ------------------------------------------
         def nn_place(q, ref):
             sim = V[q] @ V[ref].T
             sim[pid[si[q]][:, None] == pid[si[ref]][None]] = -2
@@ -209,9 +209,9 @@ def space(series: dict, size: int = 32, seed: int = 0) -> str:
             return {"median_error": round(float(np.median(err)), 3), "random_pair": round(float(np.median(rand)), 3),
                     "within_0.15": round(float((err < 0.15).mean()), 3), "random_within_0.15": round(float((rand < 0.15).mean()), 3)}
         ref = rng.choice(dk, min(20000, len(dk)), replace=False)
-        R["nearest_neighbour_place"] = {"donor_box -> other donors": nn_place(rng.choice(dk, min(3000, len(dk)), replace=False), ref)}
+        R["nearest_neighbor_place"] = {"donor_box -> other donors": nn_place(rng.choice(dk, min(3000, len(dk)), replace=False), ref)}
         if len(ok_):
-            R["nearest_neighbour_place"]["other_site_box -> donors"] = nn_place(rng.choice(ok_, min(3000, len(ok_)), replace=False), ref)
+            R["nearest_neighbor_place"]["other_site_box -> donors"] = nn_place(rng.choice(ok_, min(3000, len(ok_)), replace=False), ref)
         # -- the donors' leading axes against what is known about a box ---------------------------
         if name in ("liver", "kidney"):
             Z = (V[dm] - dmu) @ U[:, :8]
@@ -331,7 +331,7 @@ def token_sample(u: str, digest: str, pid: str, coll: str, phase: str, force: bo
             best = occ.argmax(0); pur = occ.max(0)
             bg = 1.0 - occ.sum(0)
             label = np.where(bg > pur, 0, np.asarray(vals)[best]); pur = np.maximum(pur, bg)
-            centres = field.token_centres(j)
+            centers = field.token_centers(j)
             shape = field.lattice_shape(j)
             idx3 = np.stack(np.unravel_index(np.arange(len(label)), shape), 1) * np.asarray(k) + (np.asarray(k) - 1) / 2.0
             for v in [0] + vals:
@@ -340,7 +340,7 @@ def token_sample(u: str, digest: str, pid: str, coll: str, phase: str, force: bo
                     continue
                 take = rng.choice(cand, min(PER_LABEL * (3 if v == 0 else 1), len(cand)), replace=False)
                 T["lattice"].append(np.full(len(take), j, np.int8)); T["label"].append(np.full(len(take), v, np.int8))
-                T["purity"].append(pur[take].astype(np.float32)); T["world"].append(centres[take].astype(np.float32))
+                T["purity"].append(pur[take].astype(np.float32)); T["world"].append(centers[take].astype(np.float32))
                 oc = ((idx3[take] - bbox[v][0]) / np.maximum(bbox[v][1] - bbox[v][0], 1)) if v else np.full((len(take), 3), np.nan)
                 T["organ_coords"].append(oc.astype(np.float32)); T["vec"].append(np.asarray(field.tokens[j][take], np.float16))
         meta = {"u": u, "pid": pid, "coll": coll, "phase": phase, "tokens": int(sum(len(x) for x in T["label"])),
@@ -359,7 +359,7 @@ def token_sample(u: str, digest: str, pid: str, coll: str, phase: str, force: bo
 def token_space(series: dict, seed: int = 0) -> str:
     """What one RAW token knows, per lattice, read by linear probes that never see a patient twice:
     which structure it is in, where it is in the body (mm from the liver's centroid) and in its
-    organ, which side, which site, which phase - and whether its nearest neighbour in ANOTHER
+    organ, which side, which site, which phase - and whether its nearest neighbor in ANOTHER
     patient is the same structure at the same place."""
     import numpy as np
     from feldglas.adapters import radar
@@ -439,7 +439,7 @@ def token_space(series: dict, seed: int = 0) -> str:
         R["collection, liver tokens only"] = {a: b for a, b in classify(X[liv], c_[liv], g[liv]).items() if a != "per_class"}
         kk = c_ == "c4kc_kits"
         R["phase within c4kc_kits"] = classify(X[kk], ph[kk], g[kk])
-        # nearest neighbour in ANOTHER patient: same structure? how far away in the body?
+        # nearest neighbor in ANOTHER patient: same structure? how far away in the body?
         q = rng.choice(np.flatnonzero(k), min(4000, int(k.sum())), replace=False)
         ref = rng.choice(np.flatnonzero(k), min(40000, int(k.sum())), replace=False)
         Xn = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-12)
@@ -447,7 +447,7 @@ def token_space(series: dict, seed: int = 0) -> str:
         sim[g[q][:, None] == g[ref][None]] = -2
         nn = ref[sim.argmax(1)]
         rnd = rng.choice(ref, len(q))
-        R["nearest_neighbour_in_another_patient"] = {
+        R["nearest_neighbor_in_another_patient"] = {
             "same_structure": round(float((lab[nn] == lab[q]).mean()), 3), "random": round(float((lab[rnd] == lab[q]).mean()), 3),
             "median_distance_mm_in_the_liver_frame": round(float(np.median(np.linalg.norm(pos[nn] - pos[q], axis=1))), 1),
             "random_mm": round(float(np.median(np.linalg.norm(pos[rnd] - pos[q], axis=1))), 1)}

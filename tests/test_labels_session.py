@@ -126,7 +126,7 @@ class TestSession(unittest.TestCase):
 
     def test_a_map_is_painted_where_the_boxes_are(self):
         sw, X = self.s.sweep("liver", size_mm=32.0)
-        score = np.arange(len(sw.centre), dtype=float)
+        score = np.arange(len(sw.center), dtype=float)
         vol = self.s.volume(sw, score, within=self.s.mask("liver"))
         self.assertEqual(vol.shape, tuple(self.field.grid.shape))
         self.assertTrue(np.isnan(vol[~self.s.mask("liver")]).all())

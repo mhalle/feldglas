@@ -56,8 +56,8 @@ class Field:
     ``tokens[j]`` is ``(N_j, C)``, row-major over lattice ``j``'s ``(Z, Y, X)``; ``kernels[j]``
     is the box of model voxels one of its tokens covers; ``grid`` places the MODEL grid in the
     world. A lattice's own geometry is derived (:meth:`lattice_geometry`), never stored - its
-    sample (0, 0, 0) is the CENTRE of the first token's box, which is what makes a per-token
-    scalar an ordinary cell-centred array.
+    sample (0, 0, 0) is the CENTER of the first token's box, which is what makes a per-token
+    scalar an ordinary cell-centered array.
 
     ``exact_geometry`` is False for fields written before the exporter recorded its crop and
     resample (the 2026-09-20 pilot): their ``grid`` has the right shape and spacing and an
@@ -140,15 +140,15 @@ class Field:
 
     # -- place --------------------------------------------------------------------------
     def lattice_geometry(self, j: int) -> Geometry:
-        """Lattice ``j`` as a cell-centred grid in the world: each step is a kernel's worth of
-        model voxels, and sample (0, 0, 0) sits at the centre of the first token's box."""
+        """Lattice ``j`` as a cell-centered grid in the world: each step is a kernel's worth of
+        model voxels, and sample (0, 0, 0) sits at the center of the first token's box."""
         k = self.kernels[j]
-        first = [(kk - 1) / 2.0 for kk in k]                      # model index of the first box's centre
+        first = [(kk - 1) / 2.0 for kk in k]                      # model index of the first box's center
         return Geometry(shape=self.lattice_shape(j),
                         directions=tuple(tuple(float(v) * kk for v in row) for row, kk in zip(self.grid.directions, k)),
                         origin=tuple(float(v) for v in self.grid.world(first)))
 
-    def token_centres(self, j: int) -> np.ndarray:
+    def token_centers(self, j: int) -> np.ndarray:
         """``(N_j, 3)`` world positions (LPS mm) of lattice ``j``'s tokens, in token order."""
         idx = np.stack(np.meshgrid(*[np.arange(s) for s in self.lattice_shape(j)], indexing="ij"), -1).reshape(-1, 3)
         return self.lattice_geometry(j).world(idx)

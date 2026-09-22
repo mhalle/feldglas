@@ -23,7 +23,7 @@ map of pilot scripts still living in the design record. The design record is
 | --- | --- |
 | `feldglas.contract` | what any encoder must hand over: a `Field` (token lattices over a model grid, placed in the world in rankfield's `Geometry`), a `Head` (tokens -> one vector), and `Provenance` with **the license the arrays inherit** |
 | `feldglas.store` | a field on disk (`feldglas-field 0.1`), with a version gate |
-| `feldglas.gate` | which tokens a region owns and *how much of each*: the raster rule, interior-only, a threshold, soft gates, boxes in millimetres |
+| `feldglas.gate` | which tokens a region owns and *how much of each*: the raster rule, interior-only, a threshold, soft gates, boxes in millimeters |
 | `feldglas.adapters.radar` | RADAR behind the contract: its head in numpy (one attention layer and a Linear per organ; matched the GPU to 3e-8, 0.2 ms per gate), finding scores, the pilot's fields |
 | `feldglas.adapters.null` | the null model - TotalSegmentator's `total_fast` encoder (never shown a report) through the same suite; encode with `tools/null_export_modal.py` |
 | `feldglas.heads` | `MeanPoolHead`, for encoders that bring no head; `LatticeMeanHead`, for lattices of different widths (one vote per lattice) |
