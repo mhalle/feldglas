@@ -12,5 +12,5 @@ no scipy, no modal (tests/test_light_import.py).
 """
 from .contract import Embedding, Field, Head, Kernel, Provenance
 
-__version__ = "0.0.1"
+__version__ = "0.1.0"
 __all__ = ["Embedding", "Field", "Head", "Kernel", "Provenance", "__version__"]
