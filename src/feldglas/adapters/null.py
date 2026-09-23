@@ -335,4 +335,5 @@ def field_from_export(arrays, meta: dict) -> Field:
                                origin=tuple(g["origin"])),
                  provenance=provenance(source=meta["u"], code=meta.get("haversack", ""), v=v, **extra),
                  native_mask=arrays.get("native_mask"), native_labels=ORGANS,
-                 embedding=v.embedding())
+                 embedding=v.embedding(),
+                 data_box=((0, 0, 0), tuple(meta["model_shape"])) if "model_shape" in meta else None)

@@ -65,10 +65,12 @@ class Embedding:
     ``layers``       which encoder layer each lattice is (with model and weights: two vectors
                      compare only if all agree).
     ``stage``        ``raw`` tokens need a head; ``projected`` ones are in ``projects_to``'s space.
-    ``receptive_mm`` a token's measured extent along the lattice's (Z, Y, X) axes - duckn's core
-                     ``thickness``: a map read off the lattice is no sharper than this.
-    ``support_offset_mm`` where a token's evidence is centered against its sample, same axes
-                     (RADAR's look offset). ``space_origin`` stays the exact grid.
+    ``receptive_mm`` a token's measured extent along the lattice's (Z, Y, X) axes, a full WIDTH
+                     (not a radius) - duckn's core ``thickness``: a map read off the lattice is no
+                     sharper than this.
+    ``support_offset_mm`` where a token's evidence is centered MINUS where its box is drawn, mm
+                     along the lattice's axes, positive toward increasing index (RADAR looks toward
+                     index 0: negative). ``space_origin`` stays the exact grid.
     """
 
     layers: tuple[str, ...] = ()
@@ -108,6 +110,12 @@ class Field:
     native_labels: tuple[str, ...] = ()         # label value v is native_labels[v - 1]; 0 is background
     exact_geometry: bool = True
     embedding: Embedding = _field(default_factory=Embedding)
+    #: The model voxels that hold the scanned image, as a half-open box ``(lo, hi)`` in model-grid
+    #: indices; everything else is the encoder's padding (RADAR pads its crop up to a multiple of
+    #: 32, the null model to its tiles). None: not recorded. Added 2026-09-22 after a client test
+    #: found a third of a RADAR field's tokens past the end of the scan, unmarked, the deep ones
+    #: with LARGER norms than the body's - a client pooling or ranking them is misled.
+    data_box: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None
 
     def __post_init__(self):
         if len(self.tokens) != len(self.kernels) or not self.tokens:
@@ -123,6 +131,11 @@ class Field:
             n = len(getattr(self.embedding, name))
             if n not in (0, self.lattices):
                 raise ValueError(f"embedding.{name}: {n} entries for {self.lattices} lattices")
+        if self.data_box is not None:
+            lo, hi = (tuple(int(v) for v in b) for b in self.data_box)
+            if not all(0 <= l < h <= n for l, h, n in zip(lo, hi, self.grid.shape)):
+                raise ValueError(f"data box {lo}..{hi} is not a box inside the model grid {self.grid.shape}")
+            self.data_box = (lo, hi)
         if self.native_mask is not None and tuple(self.native_mask.shape) != tuple(self.grid.shape):
             raise ValueError(f"native mask {self.native_mask.shape} is not on the model grid {self.grid.shape}")
 
@@ -187,6 +200,15 @@ class Field:
         return Geometry(shape=self.lattice_shape(j),
                         directions=tuple(tuple(float(v) * kk for v in row) for row, kk in zip(self.grid.directions, k)),
                         origin=tuple(float(v) for v in self.grid.world(first)))
+
+    def lattice_extent(self, j: int):
+        """Lattice ``j``'s tokens whose box holds any scanned voxel, as a half-open index box
+        ``(lo, hi)`` - or None when the field has no ``data_box``. Tokens outside it saw padding only."""
+        if self.data_box is None:
+            return None
+        lo, hi = self.data_box
+        k = self.kernels[j]
+        return (tuple(l // kk for l, kk in zip(lo, k)), tuple(-(-h // kk) for h, kk in zip(hi, k)))
 
     def token_centers(self, j: int) -> np.ndarray:
         """``(N_j, 3)`` world positions (LPS mm) of lattice ``j``'s tokens, in token order."""

@@ -57,9 +57,10 @@ Analogy with the family's class field:
 **Core fields, per lattice array** (all exist in duckn today):
 - `space` (`left-posterior-superior`), `space_origin`, per-axis `space_direction`, `centering`,
   `unit: "mm"` - placement.
-- `thickness` on each space axis - **the token's measured receptive field** (the spec defines it as
-  the extent of the region measured to produce each sample). RADAR: ~20 mm fine, ~40 mm mid,
-  ~80-120 mm deep (EXPLORATION section 2). A viewer then knows a map's real resolution.
+- `thickness` on each space axis - **the token's measured receptive field, as a full WIDTH** (about
+  the full width at half maximum of the measured point spread; the spec defines thickness as the
+  extent of the region measured to produce each sample). RADAR: 20 mm fine, 40 mm mid, 80 mm deep
+  (EXPLORATION section 2). A viewer then knows a map's real resolution.
 - `intent: "embedding-field"` - documentation only; the vocabulary is open.
 
 **The `embedding` extension, 0.1** - an unregistered extension under duckn's rule (`456516e`: its own
@@ -76,7 +77,8 @@ pooled vector with no space axes.
     "projects_to": {"space": "radar:text-256", "head": "sha256:..."},
     "metric": "cosine", "normalized": false,
     "kernel": [8, 32, 32],
-    "support": {"offset": [6.6, 6.3, 7.6], "unit": "mm"},
+    "support": {"offset": [-6.6, -6.3, -7.6], "unit": "mm"},
+    "extent": {"lo": [0, 0, 0], "hi": [8, 11, 12]},
     "group": {"id": "radar/<series>", "member": 0, "members": 3}
   }
 }
@@ -87,9 +89,16 @@ pooled vector with no space axes.
   with projected ones.
 - **`stage`**: `raw` tokens need a head; `projected` vectors are already in a named shared space.
   (The lesson of the study's sign-flip bug: raw tokens are not in the text space.)
-- **`support.offset`**: where a token's evidence is centered relative to its sample - RADAR's
-  measured look offset (phantom, feldglas `LOOK_OFFSET_MM`), toward index 0. Extent is core
-  `thickness`. Moving `space_origin` to absorb the offset would misstate the grid, which is exact.
+- **`support.offset`**: where a token's evidence is centered MINUS where its box is drawn, mm along
+  the lattice's axes, positive toward increasing index. RADAR's measured look offset (phantom,
+  feldglas `LOOK_OFFSET_MM`) points toward index 0, so its stored offsets are negative. Extent is
+  core `thickness`. Moving `space_origin` to absorb the offset would misstate the grid, which is exact.
+- **`extent`** (per lattice) and **`data_box`** (root): encoders pad their input - RADAR its crop to
+  multiples of 32, the null model to its tiles - so a lattice extends past the scan. `data_box` is the
+  half-open box of model voxels that held the scanned image; each lattice's `extent` is the half-open
+  box of tokens whose box holds any of them, derived from `data_box` and checked on read. Clients
+  drop tokens outside it: a client test (below) found a third of a RADAR field padded, the deep
+  padded tokens with larger norms than the body's.
 - **`kernel`**: model-grid voxels per token along the lattice's axes. The model grid is derived from
   it (decision 6); a pooled vector with no space axes omits it.
 - **`group`**: which arrays are the layers of one field. The root's `embedding` extension lists the
@@ -101,8 +110,10 @@ pooled vector with no space axes.
 **Provenance** (duckn's provenance extension is drafted but NOT implemented; until it is, these facts
 ride in the `embedding` extension or the group's attributes, and move when it lands):
 - `sources`: the input CT - content digest (haversack's identity), DICOM UIDs, collection, license,
-  citation; its **grid** in duckn's form (shape, directions, origin), so a client with a mask on the
-  CT's grid knows it is the same image. Acquisition facts (phase and how it was decided,
+  citation; its **grid** in duckn's form (shape, directions, origin) **as the file was delivered**,
+  so a client with a mask on the CT's grid knows it is the same image - never the encoder's
+  reoriented copy (RADAR's LAS grid runs the other way in y: matching by index would swap anterior
+  and posterior). Stored today as `provenance.input` (`identity`, `grid`). Acquisition facts (phase and how it was decided,
   manufacturer, kernel, dose) belong here too: RADAR's vectors carry them and they cannot be removed
   afterwards (5.3-5.5), and duckn §4.5 drops the CT's own metadata on derivation, so the field
   restates them.
@@ -152,4 +163,22 @@ Not built:
   maps, geospatial raster embeddings, ML dataset formats)? Survey before naming `embedding` 1.0.
 - Should `sources` carry the full transform from the CT's grid to the model grid (as haversack's
   frame does), or is world placement plus the CT's grid enough? Every client operation so far needs
-  only the latter.
+  only the latter - including the client test below.
+
+## The client test (2026-09-22)
+
+A field of IDC series `159dff32-...` (RADAR, fp16, encoded on the M2), its CT and haversack's
+`ts.v2:total_fast` labels were handed to an agent with a client's directions and nothing else - no
+feldglas, haversack, duckn or rankfield code, no other files. It verified placement three ways
+(the liver's tokens average 0.9 mm from the segmentation's liver centroid; ridge-predicted box HU
+R2 0.83 at the stated placement, 0.36-0.50 with an axis flipped; organ nearest-centroid 0.39 against
+0.19-0.21), found paired organs pooling alike (7 of 8), a liver-likeness map (AUC 0.93-0.99) and a
+coherent pair of fine liver tokens at cosine 0.15-0.17 over a faint 8-10 mm low-density focus. Its
+usability findings, and what changed: (1) a third of each lattice past the scan, unmarked -
+`data_box` and `extent`; (2) the provenance grid was RADAR's reoriented one - now the delivered
+file's; (3) `crop` / `resample_target` in different axis orders, undocumented - `extra` is declared
+internal, `data_box` is the interface; (4) axis order and spacing only in `space_direction` - the
+guide says so; (5) reach width-or-radius and offset sign unstated - defined above; (6) edge tokens
+less reliable, (7) raw cosines high everywhere (a shared mean must come off before comparing) - in
+the guide; (8) `schema` pointed at a file the client lacks - the guide, `src/feldglas/field_readme.md`,
+is packed into every field as `README.md` and `schema` names it first.

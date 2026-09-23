@@ -30,6 +30,7 @@ def oblique_field(widths=(128, 256, 320)) -> Field:
             for kk, w in zip(KERNELS, widths)]
     m = np.zeros(shape, np.uint8); m[2:10, 8:40, 8:40] = 1
     return Field(tokens=toks, kernels=KERNELS, grid=grid, native_mask=m, native_labels=("liver",),
+                 data_box=((0, 0, 0), (13, 60, 64)),                  # padded at the end, as the encoders pad
                  provenance=Provenance(encoder="radar", code="9319f36", weights="ckpt", preprocessing="p",
                                        license="CC-BY-NC-SA-4.0", source="series-1", extra={"crop": [1, 2]},
                                        input={"identity": {"series": "series-1"},
@@ -108,6 +109,37 @@ class ZarrStore(unittest.TestCase):
         self.assertNotIn("support", a)                           # not known for this lattice: not stated
         self.assertNotIn("projects_to", a)
         self.assertEqual([x.get("thickness") for x in arr["axes"]], [20.0, 21.0, 22.0, None])
+
+    def test_each_lattice_says_which_tokens_saw_the_scan(self):
+        root = zarr.open_group(store=zarr.storage.ZipStore(str(self.p), mode="r"), mode="r")
+        ext = root.attrs.asdict()["duckn"]["extensions"]["embedding"]
+        self.assertEqual(ext["data_box"], {"lo": [0, 0, 0], "hi": [13, 60, 64]})
+        # kernels (8,32,32), (4,16,16), (2,8,8): a token counts if its box holds ANY scanned voxel
+        want = [([0, 0, 0], [2, 2, 2]), ([0, 0, 0], [4, 4, 4]), ([0, 0, 0], [7, 8, 8])]
+        for j, (lo, hi) in enumerate(want):
+            e = root[f"lattice_{j}"].attrs.asdict()["duckn"]["extensions"]["embedding"]["extent"]
+            self.assertEqual((e["lo"], e["hi"]), (lo, hi), f"lattice {j}")
+        self.assertEqual(read_field(self.p).data_box, self.f.data_box)
+
+    def test_a_data_box_outside_the_model_grid_is_refused(self):
+        f = oblique_field()
+        for box in (((0, 0, 0), (17, 64, 64)), ((5, 0, 0), (5, 64, 64)), ((-1, 0, 0), (4, 4, 4))):
+            with self.assertRaisesRegex(ValueError, "data box"):
+                Field(tokens=f.tokens, kernels=f.kernels, grid=f.grid, provenance=f.provenance, data_box=box)
+
+    def test_an_extent_that_disagrees_with_the_box_is_refused(self):
+        def wider(d): d["extensions"]["embedding"]["extent"]["hi"][0] += 1
+        with self.assertRaisesRegex(ValueError, "extent"):
+            read_field(self._rewrite("lattice_2/zarr.json", wider))
+
+    def test_the_client_guide_travels_in_the_zip(self):
+        with zipfile.ZipFile(self.p) as z:
+            text = z.read("README.md").decode()
+            self.assertEqual(z.getinfo("README.md").compress_type, zipfile.ZIP_STORED)
+        self.assertIn("Which tokens saw the scan", text)
+        root = json.loads(zipfile.ZipFile(self.p).read("zarr.json"))["attributes"]["duckn"]
+        self.assertTrue(root["extensions"]["embedding"]["schema"].startswith("README.md"))
+        read_field(self.p)                                        # zarr ignores it
 
     def test_duckn_reads_thickness_on_every_space_axis(self):
         from duckn import DucknMetadata

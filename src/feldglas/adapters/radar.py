@@ -54,17 +54,19 @@ ORGANS = ("adrenal gland", "aorta", "erector spinae muscle", "brain", "clavicle"
 LOOK_OFFSET_MM = {"deep": (6.6, 6.3, 7.6), "mid": (2.8, 2.2, 2.7), "fine": (1.1, 1.6, 1.4)}
 #: Lattice names, in KERNELS' order: the ``layer`` of each lattice in a stored field.
 LATTICES = ("deep", "mid", "fine")
-#: How far a token's evidence reaches: the distance by which one sharp 6 mm sphere's effect on a
-#: token has fallen to nearly nothing (EXPLORATION section 2, point spread over 30 sites,
-#: 2026-09-20: "a map cannot be sharper than ~20 mm (fine), ~40 mm (mid), ~80 mm (deep)").
-#: Measured isotropically; the theoretical fields are larger (235x191x191 mm deep). Stored as
-#: duckn's ``thickness`` on each space axis.
+#: How far a token's evidence reaches, as a full WIDTH: roughly the full width at half maximum of
+#: the measured point spread (EXPLORATION section 2, one sharp 6 mm sphere over 30 sites,
+#: 2026-09-20: the response falls to half its peak within ~10 mm fine, ~20-30 mm mid, ~40-60 mm
+#: deep; "a map cannot be sharper than ~20 mm (fine), ~40 mm (mid), ~80 mm (deep)"). Measured
+#: isotropically; the theoretical fields are larger (235x191x191 mm deep). Stored as duckn's
+#: ``thickness`` on each space axis.
 RECEPTIVE_MM = {"deep": (80.0, 80.0, 80.0), "mid": (40.0, 40.0, 40.0), "fine": (20.0, 20.0, 20.0)}
 #: What a RADAR field's vectors are: raw tokens, which need RADAR's head (not yet a packaged,
 #: digest-checked artifact - docs/embedding-field.md, "Not built" 4 - so no ``projects_to``).
 EMBEDDING = Embedding(layers=LATTICES, stage="raw", metric="cosine", normalized=False,
                       receptive_mm=tuple(RECEPTIVE_MM[n] for n in LATTICES),
-                      support_offset_mm=tuple(LOOK_OFFSET_MM[n] for n in LATTICES))
+                      # evidence minus drawn center: RADAR looks toward index 0, so negative
+                      support_offset_mm=tuple(tuple(-v for v in LOOK_OFFSET_MM[n]) for n in LATTICES))
 #: Which of RADAR's 36 organ QUERIES a named structure is pooled under, for TotalSegmentator's
 #: names (haversack `ts.v2:*`). By NAME and by rule, never by label value: values differ between
 #: tasks and versions. Derived from upstream's own merge table (`process_img_mask.merged_organ_id`,
@@ -201,7 +203,7 @@ def english_names(inference_demo_py) -> dict[str, str]:
 
 
 def provenance(source: str = "", input: dict | None = None, **extra) -> Provenance:
-    return Provenance(encoder=NAME, code=CODE, weights=WEIGHTS, preprocessing="radar-prep 0.1 (upstream's, on the GPU)",
+    return Provenance(encoder=NAME, code=CODE, weights=WEIGHTS, preprocessing="radar-prep 0.1 (upstream's DataFolder, restated in torch)",
                       license=LICENSE, source=source, extra=extra, input=input or {})
 
 
@@ -213,28 +215,41 @@ def field_from_export(arrays, meta: dict) -> Field:
     format must not have two authors."""
     g = meta["grid"]
     extra = {k: meta[k] for k in ("crop", "resample_target", "image_shape", "image_affine_ras",
+                                  "input_shape", "input_affine_ras",
                                   "prep_max_abs_vs_upstream", "encode_s") if k in meta}
     return Field(tokens=[arrays[f"tokens{j}"] for j in range(len(KERNELS))], kernels=KERNELS,
                  grid=Geometry(shape=tuple(g["shape"]), directions=tuple(tuple(row) for row in g["directions"]),
                                origin=tuple(g["origin"])),
                  provenance=provenance(source=meta["u"], input=input_record(meta), **extra),
                  native_mask=arrays.get("native_mask"), native_labels=ORGANS,   # None: an encoder-only encode (fp16 on MPS)
-                 embedding=EMBEDDING)
+                 embedding=EMBEDDING, data_box=data_box(meta))
 
 
 def input_record(meta: dict) -> dict:
     """The input CT as the field records it: its identity, and its grid in duckn's form (LPS,
-    one direction row per array axis) from the exporter's ``image_affine_ras`` - the grid of the
-    image RADAR read, i.e. reoriented to LAS: the CT's own voxels, its axes permuted and flipped.
-    Empty when the exporter recorded no affine."""
+    one direction row per array axis) - the grid of the file AS DELIVERED (``input_affine_ras``,
+    ``input_shape``, recorded before RADAR reorients to LAS). Not the reoriented image's
+    (``image_affine_ras``): same voxels, but its axes permuted and flipped, so a client matching
+    voxel indices against the delivered CT would swap anterior and posterior (found by a client
+    test, 2026-09-22). A field whose exporter recorded no delivered grid claims none."""
     out = {"identity": {"series": meta["u"]}} if meta.get("u") else {}
-    if "image_affine_ras" in meta and "image_shape" in meta:
-        a = np.asarray(meta["image_affine_ras"], float)
+    if "input_affine_ras" in meta and "input_shape" in meta:
+        a = np.asarray(meta["input_affine_ras"], float)
         lps = np.array([-1.0, -1.0, 1.0])
-        out["grid"] = {"shape": [int(v) for v in meta["image_shape"]],
+        out["grid"] = {"shape": [int(v) for v in meta["input_shape"]],
                        "directions": [(a[:3, i] * lps).round(9).tolist() for i in range(3)],
                        "origin": (a[:3, 3] * lps).round(9).tolist(), "space": "left-posterior-superior"}
     return out
+
+
+def data_box(meta: dict):
+    """The model voxels holding the scan: the crop, from the model grid's first voxel (``_prep``
+    pads only at the END, up to multiples of 32). Axes (Z, Y, X), as ``crop`` is. None when the
+    exporter recorded no crop."""
+    c = meta.get("crop")
+    if not c:
+        return None
+    return ((0, 0, 0), tuple(int(h) - int(l) for l, h in zip(c["lo"], c["hi"])))
 
 
 def read_pilot_field(path) -> Field:

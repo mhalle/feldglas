@@ -268,8 +268,8 @@ class Export:
         work = tempfile.mkdtemp()
         try:
             vol.reload()
-            ct = nib.load(f"/vol/ct/{u}.nii.gz")
-            ct = ct.as_reoriented(ornt_transform(io_orientation(ct.affine), axcodes2ornt(("L", "A", "S"))))
+            ct0 = nib.load(f"/vol/ct/{u}.nii.gz")                # the grid AS DELIVERED goes in the provenance
+            ct = ct0.as_reoriented(ornt_transform(io_orientation(ct0.affine), axcodes2ornt(("L", "A", "S"))))
             arr = torch.as_tensor(np.asarray(ct.dataobj, np.float32)).cuda()
             aff = np.asarray(ct.affine, float)
             h, w, dd = arr.shape
@@ -290,7 +290,8 @@ class Export:
             assert tuple(own.shape) == tuple(base.shape[2:]), (own.shape, base.shape)
             meta.update(grid=self._grid(aff, (h, w, dd), tgt, lo, base.shape[2:]),
                         crop={"lo": lo, "hi": hi}, resample_target=tgt, image_shape=[h, w, dd],
-                        image_affine_ras=aff.tolist())
+                        image_affine_ras=aff.tolist(), input_shape=[int(v) for v in ct0.shape[:3]],
+                        input_affine_ras=np.asarray(ct0.affine, float).tolist())
             for j, t in enumerate(toks):
                 arrays[f"tokens{j}"] = t.half().cpu().numpy()
             arrays["native_mask"] = own.to(torch.uint8).cpu().numpy()

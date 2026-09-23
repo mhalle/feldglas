@@ -50,7 +50,8 @@ FORMAT, VERSION = "feldglas-field", "0.1"
 ZARR_VERSION = "0.2"
 KNOWN_VERSIONS = {"0.1", "0.2"}
 EXTENSION, EXTENSION_VERSION = "embedding", "0.1"   # general, unregistered (duckn 456516e rule)
-SCHEMA = "feldglas docs/embedding-field.md"          # where the extension is defined
+SCHEMA = "README.md in this file; feldglas docs/embedding-field.md"   # a client has the first
+README = pathlib.Path(__file__).with_name("field_readme.md")   # packed into every field as README.md
 INTENT = "embedding-field"
 DUCKN_VERSION = "1.0"                                 # geometry and a list axis: nothing past 1.0
 SPACE = "left-posterior-superior"                     # rankfield's and haversack's world
@@ -156,6 +157,9 @@ def _lattice_attrs(field: Field, j: int) -> dict:
            "group": {"id": _group_id(field), "member": j, "members": field.lattices}}
     if e.projects_to is not None:
         ext["projects_to"] = e.projects_to
+    extent = field.lattice_extent(j)
+    if extent is not None:
+        ext["extent"] = {"lo": list(extent[0]), "hi": list(extent[1])}
     offset = e.lattice("support_offset_mm", j)
     if offset is not None:
         ext["support"] = {"offset": _mm(offset), "unit": "mm"}
@@ -172,6 +176,8 @@ def _root_attrs(field: Field, names: list[str]) -> dict:
     return duckn_attrs(DucknMetadata(version=DUCKN_VERSION, intent=INTENT, extensions={EXTENSION: {
         "version": EXTENSION_VERSION, "schema": SCHEMA, "format": FORMAT, "format_version": ZARR_VERSION,
         "group": {"id": _group_id(field), "members": names},
+        **({"data_box": {"lo": list(field.data_box[0]), "hi": list(field.data_box[1])}}
+           if field.data_box is not None else {}),
         "provenance": _provenance_record(field.provenance)}}))
 
 
@@ -200,6 +206,7 @@ def _write_zarr(path: pathlib.Path, field: Field, token_dtype) -> pathlib.Path:
         with zipfile.ZipFile(partial, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as zf:
             for fp in sorted(q for q in staging.rglob("*") if q.is_file()):
                 zf.write(fp, fp.relative_to(staging).as_posix())
+            zf.writestr("README.md", README.read_text())   # the client's guide travels with the field
         os.replace(partial, path)                     # never half a field under the real name
     finally:
         shutil.rmtree(staging, ignore_errors=True)
@@ -300,8 +307,15 @@ def _read_zarr(path) -> Field:
         data = arr[:]
         tokens.append(data.reshape(-1, data.shape[-1]))
     grid = _model_grid(placed[0], kernels[0])
+    box = ext.get("data_box")
     field = Field(tokens=tokens, kernels=kernels, grid=grid, provenance=Provenance(**ext["provenance"]),
-                  embedding=_embedding(described, thickness, ext, path))
+                  embedding=_embedding(described, thickness, ext, path),
+                  data_box=None if box is None else (tuple(box["lo"]), tuple(box["hi"])))
+    for j, a in enumerate(described):                 # each lattice's extent is derived from the box, and checked
+        want = field.lattice_extent(j)
+        got = a.get("extent")
+        if (want is None) != (got is None) or (got is not None and (tuple(got["lo"]), tuple(got["hi"])) != want):
+            raise ValueError(f"{path}: lattice {j}'s extent {got} is not what the field's data box gives ({want})")
     if (field.provenance.encoder, field.provenance.weights) != (described[0]["space"]["model"],
                                                                  described[0]["space"]["weights"]):
         raise ValueError(f"{path}: the lattices' space names another model or weights than the provenance")

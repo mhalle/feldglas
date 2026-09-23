@@ -125,27 +125,32 @@ class FromExport(unittest.TestCase):
         arrays["native_mask"] = np.zeros(shape, np.uint8)
         meta = {"u": "series-x", "grid": {"shape": list(shape), "directions": [[0, 0, 5.0], [0, -1.0, 0], [1.0, 0, 0]],
                                           "origin": [1.0, 2.0, 3.0]},
-                "crop": {"lo": [0, 0, 0], "hi": [8, 32, 32]}, "encode_s": 0.2, "prep_max_abs_vs_upstream": 0.0}
+                "crop": {"lo": [2, 5, 0], "hi": [8, 30, 32]}, "encode_s": 0.2, "prep_max_abs_vs_upstream": 0.0}
         f = radar.field_from_export(arrays, meta)
         self.assertEqual(f.provenance.source, "series-x"); self.assertEqual(f.provenance.license, "CC-BY-NC-SA-4.0")
-        self.assertEqual(f.provenance.extra["crop"]["hi"], [8, 32, 32]); self.assertTrue(f.exact_geometry)
+        self.assertEqual(f.provenance.extra["crop"]["hi"], [8, 30, 32]); self.assertTrue(f.exact_geometry)
         self.assertEqual(f.grid.origin, (1.0, 2.0, 3.0)); self.assertEqual(f.native_labels, radar.ORGANS)
         self.assertEqual(f.embedding, radar.EMBEDDING)
         self.assertEqual(f.embedding.layers, ("deep", "mid", "fine"))
-        self.assertEqual(f.embedding.support_offset_mm[0], radar.LOOK_OFFSET_MM["deep"])
+        self.assertEqual(f.embedding.support_offset_mm[0], tuple(-v for v in radar.LOOK_OFFSET_MM["deep"]))  # looks toward index 0
+        self.assertEqual(f.data_box, ((0, 0, 0), (6, 25, 32)))       # the crop's size, from the grid's first voxel
         self.assertNotIn("grid", f.provenance.input)                # no affine recorded: no grid claimed
 
-    def test_the_input_ct_grid_is_the_exporters_affine_in_lps(self):
+    def test_the_input_ct_grid_is_the_delivered_files_not_the_reoriented_ones(self):
         shape = (8, 32, 32)
         arrays = {f"tokens{j}": np.zeros((int(np.prod([s // k for s, k in zip(shape, kk)])), 256), np.float16)
                   for j, kk in enumerate(radar.KERNELS)}
-        aff = np.array([[-0.7, 0, 0, 120.0], [0, 0.7, 0, -90.0], [0, 0, 2.5, -400.0], [0, 0, 0, 1]])  # LAS, in RAS mm
+        delivered = np.array([[-0.7, 0, 0, 120.0], [0, -0.7, 0, 260.0], [0, 0, 2.5, -400.0], [0, 0, 0, 1]])   # LPS-stored, RAS mm
+        las = np.array([[-0.7, 0, 0, 120.0], [0, 0.7, 0, -97.3], [0, 0, 2.5, -400.0], [0, 0, 0, 1]])        # RADAR's reorientation
         meta = {"u": "series-x", "grid": {"shape": list(shape), "directions": [[0, 0, 5.0], [0, -1.0, 0], [1.0, 0, 0]],
                                           "origin": [1.0, 2.0, 3.0]},
-                "image_shape": [512, 512, 90], "image_affine_ras": aff.tolist()}
+                "image_shape": [512, 512, 90], "image_affine_ras": las.tolist(),
+                "input_shape": [512, 512, 90], "input_affine_ras": delivered.tolist()}
         g = radar.field_from_export(arrays, meta).provenance.input["grid"]
         self.assertEqual(g["shape"], [512, 512, 90])
         ijk = np.array([10, 20, 30])
-        ras = aff[:3, :3] @ ijk + aff[:3, 3]
+        ras = delivered[:3, :3] @ ijk + delivered[:3, 3]
         lps = np.asarray(g["origin"]) + np.asarray(g["directions"]).T @ ijk
         np.testing.assert_allclose(lps, ras * [-1, -1, 1], atol=1e-9)
+        del meta["input_affine_ras"], meta["input_shape"]            # only the reoriented grid: claim none
+        self.assertNotIn("grid", radar.field_from_export(arrays, meta).provenance.input)

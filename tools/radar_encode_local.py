@@ -123,6 +123,7 @@ def main():
     ap.add_argument("ct"); ap.add_argument("--device", default="auto"); ap.add_argument("--fp16", action="store_true")
     ap.add_argument("--no-mask", action="store_true", help="encoder only: no native mask, about half the time and memory")
     ap.add_argument("--slab", type=int, default=16, help="encoder only: run the full-resolution stages this many slices at a time (exact; 0 = whole volume)")
+    ap.add_argument("--series", default="", help="the series' identity (default: the file name's stem)")
     ap.add_argument("--checkpoint", default=""); ap.add_argument("--out", default=""); ap.add_argument("--check", default="")
     a = ap.parse_args()
     import importlib.util
@@ -149,8 +150,8 @@ def main():
     ckpt = a.checkpoint or encoder_dir(radar.NAME) / "checkpoint_radar_pretrain.pth"
     t0 = time.time(); vb = vision_branch(ckpt, dev, dtype); t_load = time.time() - t0
 
-    ct = nib.load(a.ct)
-    ct = ct.as_reoriented(ornt_transform(io_orientation(ct.affine), axcodes2ornt(("L", "A", "S"))))
+    ct0 = nib.load(a.ct)                                # the grid AS DELIVERED goes in the field's provenance
+    ct = ct0.as_reoriented(ornt_transform(io_orientation(ct0.affine), axcodes2ornt(("L", "A", "S"))))
     arr = torch.as_tensor(np.asarray(ct.dataobj, np.float32)); aff = np.asarray(ct.affine, float)
     t0 = time.time()
     base, (lo, hi), tgt = Export._prep(None, arr, aff)   # on the CPU: one interpolate, and the same bits on every machine
@@ -168,9 +169,10 @@ def main():
     print(f"{dev} {str(dtype)[6:]}{'' if with_mask else ' (encoder only)'}: model grid {tuple(base.shape[2:])}, load {t_load:.1f} s, prep {t_prep:.1f} s, "
           f"encode {t_enc:.2f} s (first call {t_first:.2f} s), {mem:.1f} GB, {sum(len(t) for t in toks)} tokens")
 
-    u = pathlib.Path(a.ct).name.split(".")[0]
+    u = a.series or pathlib.Path(a.ct).name.split(".")[0]
     meta = {"u": u, "grid": Export._grid(aff, arr.shape, tgt, lo, base.shape[2:]), "crop": {"lo": lo, "hi": hi}, "resample_target": tgt,
-            "image_shape": list(arr.shape), "image_affine_ras": aff.tolist(), "encode_s": round(t_enc, 2)}
+            "image_shape": list(arr.shape), "image_affine_ras": aff.tolist(), "encode_s": round(t_enc, 2),
+            "input_shape": [int(v) for v in ct0.shape[:3]], "input_affine_ras": np.asarray(ct0.affine, float).tolist()}
     arrays = {f"tokens{j}": t.astype(np.float16) for j, t in enumerate(toks)}
     if own is not None:
         arrays["native_mask"] = own.to(torch.uint8).cpu().numpy()
