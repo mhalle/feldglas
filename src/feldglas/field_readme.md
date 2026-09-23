@@ -2,7 +2,8 @@
 
 This zip is an **embedding field**: what an image encoder computed from one CT, placed in the
 patient's world. It is packed into every field as `README.md`; the design record behind it is
-feldglas `docs/embedding-field.md`. Everything below can be done on a CPU with numpy and zarr.
+feldglas `docs/embedding-field.md`. Everything below is plain arithmetic on a CPU, in any
+language; recipes are written as math, not as one library's calls.
 
 ## What it holds
 
@@ -20,8 +21,13 @@ any mask on any grid (a segmentation of the CT, a drawn region).
 attributes carry a `duckn` object saying where its samples are in the world. Nothing here needs a
 duckn library; the fields used are explained below.
 
-A **zarr v3 group inside a zip** with stored entries (chunks are zstd). Open it with zarr's
-`ZipStore(path, mode="r")`, or read the JSON and chunks from the zip yourself.
+A **zarr v3 group inside a zip** with stored entries (chunks are zstd). Readers that open it
+directly, zstd included:
+- Python: `zarr` (3.x), `zarr.open_group(store=zarr.storage.ZipStore(path, mode="r"), mode="r")`.
+- JavaScript / TypeScript: `zarrita` with `ZipFileStore` from `@zarrita/storage`
+  (`ZipFileStore.fromBlob(blob)`; zarrita decodes zstd itself). Top-level `await` in Node needs an
+  ES module (`"type": "module"`).
+Or read the JSON and chunks from the zip yourself: entries are stored, so each is a byte range.
 
 - The root `zarr.json`'s attributes hold `duckn` metadata. Its `extensions.embedding`:
   - `group.members`: the lattice arrays, in order.
@@ -31,18 +37,21 @@ A **zarr v3 group inside a zip** with stored entries (chunks are zstd). Open it 
     the scan".
   - `provenance`: `encoder`, `weights`, `license`, and `input` - the input CT's identity and its
     `grid` **as the CT file was delivered** (`shape`; `directions`, one LPS row per array axis,
-    each row a full step - its length is the spacing, not a unit vector; `origin`; for a NIfTI,
-    array axes are nibabel's i, j, k). Compare this grid with your CT's to know a mask on it
-    belongs to this image. `identity` is what the encoder was told about the series (it may be
+    each row a full step - its length is the spacing, not a unit vector; `origin`). For a NIfTI,
+    the array axes are the file's own voxel axes i, j, k, and the grid is the file's **sform**
+    when `sform_code > 0`, else its **qform** - readers differ on which they report when both are
+    set (nibabel takes the sform, nifti-reader-js the qform when its code is higher), so apply the
+    rule yourself. Compare this grid with your CT's to know a mask on it belongs to this image. `identity` is what the encoder was told about the series (it may be
     only an id); the grid is the check you can make yourself.
-  - `provenance.extra` is the encoder's internal record (its crop, resample, timings) - not an
-    interface; do not depend on its keys.
+  - `provenance.extra` is the encoder's internal record, informational and encoder-specific
+    (RADAR: `crop`, `resample_target`, `encode_s`, `prep_max_abs_vs_upstream`). No use of the field
+    needs it; do not depend on its keys.
 - Each lattice is an array of shape `(A0, A1, A2, C)`, C order: `arr[i0, i1, i2, :]` is one token.
 
 ## Where a token is
 
 Coordinates are **LPS millimeters**: x increases to the patient's Left, y to Posterior, z to
-Superior (DICOM's convention). NIfTI affines as nibabel reports them are RAS: negate x and y.
+Superior (DICOM's convention). A NIfTI's sform/qform is RAS: negate its x and y rows.
 
 For a lattice, with `o = space_origin` and `d_a = axes[a].space_direction`:
 
@@ -55,14 +64,11 @@ What it SEES is wider - see `thickness` below (RADAR: 2.5 steps) - so a token dr
 still sees past the organ's edge. The three `space` axes are followed by a `list` axis: the channels.
 
 **To draw a lattice over a CT slice, go through world coordinates**, never through array axes - an
-index axis may run anterior or right-to-left, and `imshow` of the lattice beside the CT then
-comes out mirrored. For each CT pixel of the slice, take its world point `p` (your CT's own
-affine), and look up the token there:
-
-    D = np.array([d_0, d_1, d_2]).T            # columns are the steps
-    i = np.rint(np.linalg.solve(D, p - o))     # the token index at p (check it is inside the extent)
-
-Then paint the pixel with that token's value. The picture is in the CT's own orientation by
+index axis may run anterior or right-to-left, and drawing the lattice's array beside the CT's then
+comes out mirrored. For each CT pixel of the slice, take its world point `p` (from your CT's own
+grid), and find the token there: with `D` the 3 x 3 matrix whose COLUMNS are `d_0, d_1, d_2`,
+solve `D i = p - o` for `i` (a 3 x 3 inverse, computed once) and round each component to the
+nearest integer; check `i` is inside the extent. Then paint the pixel with that token's value. The picture is in the CT's own orientation by
 construction.
 
 ## The model grid
@@ -81,9 +87,9 @@ order, its outer edges on the CT's). Work in world coordinates and nothing depen
 
 A lattice is stored either as floats (the tokens as they are) or as **int8**. An int8 lattice's
 `duckn.value_transforms` holds one entry, `embedding.linear_along_axis`, with `axis` (3: the
-channel axis), and `slope` and `intercept`, one per channel. Decode it in float32:
+channel axis), and `slope` and `intercept`, one per channel. Decode each value in 32-bit float:
 
-    tokens = int8_values.astype(float32) * slope[channel] + intercept[channel]
+    token[..., c] = stored[..., c] * slope[c] + intercept[c]        (c: the channel index)
 
 This transform is defined here, not by duckn itself (yet). A duckn reader that does not know it
 treats the values' meaning as unknown - **never use the raw int8 values as tokens**: each channel
@@ -97,8 +103,9 @@ Encoders pad their input, so a lattice usually extends past the scan - often by 
 Each lattice's `extensions.embedding.extent` (`lo`, `hi`, half-open token indices) holds the tokens
 whose box contains any voxel of `data_box` - image the encoder was given. **Drop tokens outside
 it**: they saw padding only, and can look unlike anything real (a padded deep token's norm can
-exceed the body's). Tokens in the first or last row of the extent saw partly padding and are less
-reliable than interior ones.
+exceed the body's). A token on the extent's boundary - index `lo` or `hi - 1` along any axis - saw
+partly padding; leave boundary tokens out of scoring and references unless the region you study
+reaches the scan's edge.
 
 The converse does not hold: an encoder may also CROP the CT before it starts (RADAR trims air
 margins), so parts of your CT near its edges may lie under no token at all. Compare the extent's
@@ -133,14 +140,21 @@ from its 20 touching ones).
 
 **Raw cosines are high everywhere** (any two body tokens are often 0.6-0.8 alike, pooled organs
 0.8-0.9), so a table of pooled organs compared directly is nearly uniform. Subtract a shared
-reference first - the mean of the unit-normalized in-extent tokens whose centers lie in the body
-(any labeled structure, or above about -500 HU) - from each pooled vector, then compare by cosine.
+reference first. Exactly, per lattice:
+- `r` = the mean of the unit-length in-extent tokens whose centers lie in the body (any labeled
+  structure, or above about -500 HU), NOT re-normalized;
+- a structure's vector = the mean of its unit-length tokens, NOT re-normalized, minus `r`, and
+  THEN set to unit length;
+- compare two such vectors by their dot product (cosine).
 Compare within one lattice; different lattices rank structures differently.
 
 ## Is a region unlike normal tissue? (no head needed)
 
 The raw tokens carry abnormality on their own: no head, no vocabulary, no labels of disease. What
-they need is a **reference of normal tissue** - the same organ in a few normal scans. Measured
+they need is a **reference of normal tissue** - the same organ in a few normal scans. **With one
+scan and no normals this does not work**: ranking a scan's tokens against the rest of its own
+organ always flags something (the threshold is the scan's own tail), is blind to diffuse disease
+(it raises the whole organ), and cannot tell a protocol's effect from disease. Measured
 on RADAR's fields, 2026-09-22 (feldglas `docs/embedding-field.md`; the study's EXPLORATION 5.14).
 
 **The reference must match the scans you test**: same scanner, protocol and reconstruction.

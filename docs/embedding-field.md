@@ -181,6 +181,32 @@ Not built:
    maps per lattice with `thickness`, `role: "unknown"` outside the gate (designed in the
    capabilities session, 14:45); deviation maps against a donor atlas (5.6: plain distance in the
    liver); score maps restored to the CT grid through rankfield's `regions`.
+9. **A client library, one API in two languages** (proposed 2026-09-23, after the TypeScript client
+   test below). Python `feldglas.client` on numpy + zarr alone: open (decoded tokens, centers,
+   extent, provenance, the input grid), tokens under a mask (center or touch rule), organ vectors,
+   and `Reference.build(normals, regions, strata)` / `.score(field, region)` giving focal sites
+   (tokens against their nearest normal tokens) and a diffuse score per depth stratum (surface
+   included - cirrhosis lives there). A **reference file** in the same zarr zip form, carrying the
+   comparability key and the protocol so a mismatched pair is refused. Then `@feldglas/client` in
+   TypeScript on zarrita and `@duckn/spatial`. The two are held together by shared conformance
+   fixtures (a tiny field, float and int8, a mask, a reference, and the expected outputs as JSON),
+   the README being the specification. What the TS agent wrote by hand is that package's list: the
+   value transform, an NRRD label reader, a 3 x 3 solve, RAS/LPS.
+
+**A TypeScript client (2026-09-23).** A fourth agent, Node and npm only - no Python, no feldglas or
+duckn package - on an int8 field: zarrita with `@zarrita/storage`'s `ZipFileStore` opened the zip and
+decoded zstd with no code of its own; open, read and decode of all three lattices 172 ms; the value
+transform took 8 lines from the README. Placement held (nearest-prototype 0.43 / 0.53 against
+0.25-0.28 mirrored), the input grid matched `ct.nii.gz` to 5e-10 mm, and its within-scan "unlike the
+rest of the liver" found the same vessel-and-fissure spot as every other agent - while saying what
+it cannot do without normals. Its findings, in the guide: the README was Python-centric (zarr's
+`ZipStore`, numpy calls, `imshow`) - readers for both languages are named and the recipes are math;
+"nibabel's i, j, k" named a library where a RULE was needed - a NIfTI's grid is its sform when
+`sform_code > 0`, else its qform (nifti-reader-js prefers the qform when its code is higher, so JS
+and Python readers can disagree on a file where they differ); the shared-mean recipe now says what is
+and is not re-normalized; "less reliable" edge tokens got a rule (index `lo` or `hi - 1`); the
+"unlike normal" section says up front that it needs normal scans; `provenance.extra`'s keys are named
+as informational.
 
 ## Open questions
 
