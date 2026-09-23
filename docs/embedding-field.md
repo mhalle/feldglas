@@ -185,7 +185,22 @@ Not built:
    test below; the Python half STARTED the same day - `src/feldglas/client.py`: `open_field`, `Mask`
    on any grid, `occupancy` / `tokens_in` (center, touch, occupancy rules), `organ_vectors`, and
    `Reference.build` / `.score` for focal sites. It reproduces the painted-lesion demo from CT-grid
-   masks: threshold 0.205, every lesion found, the same two false sites, 0.3 s a scan. Still to do:
+   masks: threshold 0.205, every lesion found, the same two false sites, 0.3 s a scan. Then four
+   adversarial reviews (geometry, README-as-spec, mutation, robustness): the first `occupancy` sent
+   mask voxels to tokens at a stride - touch-gating missed 3-33 % of an organ's touching tokens, a
+   cropped ROI reported slivers as full, a mask coarser than the tokens lost them - so occupancy now
+   samples each token's own BOX (0 outside the mask array); the client refuses every lie the store
+   refuses (a reversed member list had made `fine` the coarsest lattice) and anything non-finite,
+   empty or integer-without-a-transform; keys tell unnamed lattices apart; sites join by single
+   linkage on a grid; the guide lost two definitions of "the body" and gained the transform's JSON,
+   the optional keys, the NIfTI both-codes-zero case. Mutation: 34 of 69 killed before, every
+   survivor re-run killed after. Real data again: threshold 0.195, same sites, 1.7 s a scan (exact
+   box sampling costs more than the stride did). Masks from `.seg.nrrd` are the featured input: the one
+   reader (`labels.read_seg_nrrd`) now takes 3D Slicer's LAYERED files (overlapping segments - a
+   lesion over its organ - on a 4-D `list` axis, `SegmentN_Layer`) and RAS files as well as
+   haversack's one-layer LPS ones; `structure_mask` / `seg_mask` union by name across layers, with
+   `optional=` for lesion segments a scan may not have (haversack lists only what a scan has); the
+   guide describes the file for any language. Still to do:
    depth strata and the diffuse score, the reference file, the fixtures, the TypeScript half). Python `feldglas.client` on numpy + zarr alone: open (decoded tokens, centers,
    extent, provenance, the input grid), tokens under a mask (center or touch rule), organ vectors,
    and `Reference.build(normals, regions, strata)` / `.score(field, region)` giving focal sites

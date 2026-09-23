@@ -81,6 +81,8 @@ def _decode(q: np.ndarray, transforms, path, name) -> np.ndarray:
     """The embeddings from a lattice's stored values, or a refusal: a transform this reader does
     not know leaves the values' meaning undefined (duckn), and they are never offered as tokens."""
     if not transforms:
+        if not np.issubdtype(q.dtype, np.floating):     # an integer with no transform is not a token
+            raise ValueError(f"{path}: {name!r} holds {q.dtype} values with no value transform - they are not tokens")
         return q
     if len(transforms) != 1 or transforms[0].get("name") != AXIS_LINEAR:
         raise ValueError(f"{path}: {name!r} is stored through {[t.get('name') for t in transforms]}; this reader "
@@ -88,7 +90,10 @@ def _decode(q: np.ndarray, transforms, path, name) -> np.ndarray:
     par = transforms[0]["parameters"]
     if par.get("axis") != q.ndim - 1 or len(par["slope"]) != q.shape[-1] or len(par["intercept"]) != q.shape[-1]:
         raise ValueError(f"{path}: {name!r}'s {AXIS_LINEAR} does not fit its channel axis")
-    return q.astype(np.float32) * np.asarray(par["slope"], np.float32) + np.asarray(par["intercept"], np.float32)
+    slope, intercept = np.asarray(par["slope"], np.float32), np.asarray(par["intercept"], np.float32)
+    if not (np.isfinite(slope).all() and np.isfinite(intercept).all()):
+        raise ValueError(f"{path}: {name!r}'s {AXIS_LINEAR} has a slope or intercept that is not finite")
+    return q.astype(np.float32) * slope + intercept
 DUCKN_VERSION = "1.0"                                 # geometry and a list axis: nothing past 1.0
 SPACE = "left-posterior-superior"                     # rankfield's and haversack's world
 CHUNK = 16                                            # tokens per spatial chunk edge; channels whole
@@ -103,6 +108,14 @@ def write_field(path, field: Field, token_dtype=np.float16) -> pathlib.Path:
     """``<name>.zarr.zip`` writes 0.2 (the duckn form); ``<name>.npz`` writes 0.1. ``token_dtype``
     int8 stores 0.2's tokens through ``AXIS_LINEAR`` (about half the size of fp16)."""
     path = pathlib.Path(path)
+    for j, t in enumerate(field.tokens):                  # never write what cannot be read back as a token
+        t = np.asarray(t)
+        if not np.isfinite(t).all():
+            raise ValueError(f"{path}: lattice {j} has {int((~np.isfinite(t)).sum())} token values that are not finite")
+        dt = np.dtype(token_dtype)
+        if dt.kind == "f" and np.abs(t).max(initial=0) > np.finfo(dt).max:
+            raise ValueError(f"{path}: lattice {j} reaches {float(np.abs(t).max()):.4g}, past {dt}'s range "
+                             f"({float(np.finfo(dt).max):.4g}) - write it as float32 or int8")
     path.parent.mkdir(parents=True, exist_ok=True)
     if is_zarr_zip(path):
         return _write_zarr(path, field, token_dtype)
@@ -326,6 +339,8 @@ def _placement(arr, path) -> Geometry:
     kinds = [a.get("kind") for a in axes]
     if kinds != ["space", "space", "space", "list"] or any(a.get("centering") != "cell" for a in axes[:3]):
         raise ValueError(f"{path}: {arr.name!r} axes {kinds}; a lattice is three cell-centered space axes then a list axis")
+    if any("space_direction" not in a for a in axes[:3]) or "space_origin" not in d:
+        raise ValueError(f"{path}: {arr.name!r} is not placed: a space axis has no space_direction, or no space_origin")
     return Geometry(shape=tuple(int(s) for s in arr.shape[:3]),
                     directions=tuple(tuple(float(v) for v in a["space_direction"]) for a in axes[:3]),
                     origin=tuple(float(v) for v in d["space_origin"]))
@@ -346,6 +361,8 @@ def _read_zarr(path) -> Field:
     ext = _root_extension(root, path)
     tokens, kernels, placed, described, thickness = [], [], [], [], []
     for name in ext["group"]["members"]:
+        if name not in root:
+            raise ValueError(f"{path}: the root lists {name!r} and the file has no such array")
         arr = root[name]
         a = _array_extension(arr, path)
         placed.append(_placement(arr, path)); kernels.append(tuple(int(k) for k in a["kernel"]))

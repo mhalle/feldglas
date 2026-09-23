@@ -8,8 +8,8 @@ throughout, as a client in any language would work. The TypeScript client planne
 the two together. Started 2026-09-23.
 
     f = open_field("series.zarr.zip")                         # decoded lattices, centers, extents
-    labels = read_seg_nrrd("series.seg.nrrd")                 # haversack's labels (feldglas.labels)
-    liver = structure_mask(labels, "liver")
+    labels = read_seg_nrrd("series.seg.nrrd")                 # haversack's, or 3D Slicer's (layered)
+    liver = structure_mask(labels, "liver", optional=["liver_tumor"])   # organ + lesion segments, by name
     vecs = organ_vectors(f, labels)                           # one vector per structure, shared mean off
     ref = Reference.build([(g, mask_g) for g, mask_g in normals])
     s = ref.score(f, liver)                                   # per-token distance, flagged sites
@@ -17,6 +17,12 @@ the two together. Started 2026-09-23.
 What is measured behind the defaults is in EXPLORATION 5.14 (medseg) and the README: the fine
 lattice; tokens at least half inside the region; the 5 nearest normal tokens; the threshold at the
 largest distance a held-out normal token reached; boundary tokens left out; sites within 15 mm.
+
+Four adversarial reviews (2026-09-23) shaped what follows: occupancy is sampled INSIDE each token's
+box (sending the mask's voxels to tokens at a stride missed 3-33 % of an organ's touching tokens
+and let a cropped mask report slivers as full); the reader checks everything the store's reader
+checks (a reversed member list made ``fine`` the coarsest lattice); and nothing non-finite, empty
+or integer-without-a-transform passes as an answer.
 """
 from __future__ import annotations
 
@@ -29,9 +35,16 @@ from .labels import LabelMap, read_seg_nrrd
 
 FORMAT, FORMAT_VERSIONS, EXTENSION, EXTENSION_VERSION = "feldglas-field", {"0.2"}, "embedding", "0.1"
 AXIS_LINEAR = "embedding.linear_along_axis"
+PLACEMENT_TOLERANCE_MM = 1e-3
 
-__all__ = ["open_field", "FieldView", "Lattice", "Mask", "structure_mask", "read_seg_nrrd", "labels_at",
+__all__ = ["open_field", "FieldView", "Lattice", "Mask", "structure_mask", "seg_mask", "read_seg_nrrd", "labels_at",
            "occupancy", "tokens_in", "unit", "organ_vectors", "knn_distance", "Reference", "Scores", "Site"]
+
+
+def _round(x):
+    """Half away from the lower index - ``floor(x + 0.5)`` - the same rule everywhere: ``np.rint``
+    rounds halves to EVEN, which sent voxel centers on token faces to alternate tokens."""
+    return np.floor(np.asarray(x) + 0.5).astype(np.int64)
 
 
 # -- the file ------------------------------------------------------------------------------------
@@ -63,10 +76,13 @@ class Lattice:
         """``(N, 3)`` token centers, LPS mm."""
         return self.origin + self.index @ self.steps
 
+    def continuous_index(self, points) -> np.ndarray:
+        """Where world points fall in token-index units: solve ``steps.T @ i = p - origin``."""
+        return np.linalg.solve(self.steps.T, (np.atleast_2d(points) - self.origin).T).T
+
     def index_of(self, points) -> np.ndarray:
-        """The token index (rounded, possibly outside the lattice) at each world point: solve
-        ``steps.T @ i = p - origin``."""
-        return np.rint(np.linalg.solve(self.steps.T, (np.atleast_2d(points) - self.origin).T).T).astype(np.int64)
+        """The token index at each world point (possibly outside the lattice)."""
+        return _round(self.continuous_index(points))
 
     @property
     def in_extent(self) -> np.ndarray:
@@ -88,7 +104,11 @@ class Lattice:
         return np.all((i > lo) & (i < hi - 1), axis=1)
 
     def key(self) -> tuple:
-        return tuple(self.space.get(k, "") for k in ("model", "weights", "layer", "stage"))
+        """What two vectors must share to be compared. A file that names no layer is keyed by the
+        lattice's kernel and shape instead - otherwise every lattice of it would share one key, and a
+        coarse lattice could be scored against a fine reference."""
+        layer = self.space.get("layer") or f"kernel {self.kernel} of {self.shape}"
+        return (self.space.get("model", ""), self.space.get("weights", ""), layer, self.space.get("stage", ""))
 
 
 @dataclass
@@ -114,26 +134,51 @@ class FieldView:
 
     @property
     def fine(self) -> Lattice:
-        return self.lattices[-1]
+        """The lattice with the smallest token - by its step volume, never by its place in the list."""
+        return min(self.lattices, key=lambda l: abs(float(np.linalg.det(l.steps))))
+
+
+def _need(d: dict, key: str, where: str):
+    if key not in d:
+        raise ValueError(f"{where}: no {key!r} - not a field this reader understands")
+    return d[key]
 
 
 def _decode(values: np.ndarray, transforms, where: str) -> np.ndarray:
     if not transforms:
-        return np.asarray(values, np.float32)
-    if len(transforms) != 1 or transforms[0].get("name") != AXIS_LINEAR:
-        raise ValueError(f"{where}: stored through {[t.get('name') for t in transforms]}; only {AXIS_LINEAR!r} is "
-                         "decoded here - these values are not tokens")
-    p = transforms[0]["parameters"]
-    if p.get("axis") != values.ndim - 1 or len(p["slope"]) != values.shape[-1] or len(p["intercept"]) != values.shape[-1]:
-        raise ValueError(f"{where}: {AXIS_LINEAR} does not fit the channel axis")
-    return values.astype(np.float32) * np.asarray(p["slope"], np.float32) + np.asarray(p["intercept"], np.float32)
+        if not np.issubdtype(values.dtype, np.floating):
+            raise ValueError(f"{where}: {values.dtype} values with no value transform - integers are not tokens")
+        out = np.asarray(values, np.float32)
+    else:
+        if len(transforms) != 1 or transforms[0].get("name") != AXIS_LINEAR:
+            raise ValueError(f"{where}: stored through {[t.get('name') for t in transforms]}; only {AXIS_LINEAR!r} is "
+                             "decoded here - these values are not tokens")
+        p = transforms[0].get("parameters") or {}
+        slope, intercept = (np.asarray(p.get(k, []), np.float32) for k in ("slope", "intercept"))
+        if p.get("axis") != values.ndim - 1 or len(slope) != values.shape[-1] or len(intercept) != values.shape[-1]:
+            raise ValueError(f"{where}: {AXIS_LINEAR} does not fit the channel axis")
+        out = values.astype(np.float32) * slope + intercept
+    if not np.isfinite(out).all():
+        raise ValueError(f"{where}: {int((~np.isfinite(out)).sum())} token values are not finite")
+    return out
+
+
+def _model_grid(lat: Lattice):
+    """The model grid a lattice implies (README "The model grid"): its step and first voxel's center."""
+    k = np.asarray(lat.kernel, float)
+    rows = lat.steps / k[:, None]
+    return rows, lat.origin - ((k - 1) / 2.0) @ rows
 
 
 def open_field(path) -> FieldView:
-    """A ``<series>.zarr.zip`` field, every lattice decoded. Refuses a format, version or value
-    transform it does not know, rather than guess at it."""
+    """A ``<series>.zarr.zip`` field, every lattice decoded - after the checks the store's own reader
+    makes: one group, in order; extents inside their lattices and agreeing with the data box; every
+    lattice placing the same model grid; finite, non-singular geometry; no integer read as tokens.
+    Refuses a format, version or value transform it does not know, rather than guess at it."""
     import zarr
     path = str(pathlib.Path(path).expanduser())
+    if not pathlib.Path(path).is_file():
+        raise FileNotFoundError(f"{path}: no such field")
     root = zarr.open_group(store=zarr.storage.ZipStore(path, mode="r"), mode="r")
     ext = ((root.attrs.asdict().get("duckn") or {}).get("extensions") or {}).get(EXTENSION)
     if not ext:
@@ -141,38 +186,83 @@ def open_field(path) -> FieldView:
     if ext.get("format") != FORMAT or ext.get("format_version") not in FORMAT_VERSIONS or ext.get("version") != EXTENSION_VERSION:
         raise ValueError(f"{path}: {ext.get('format')!r} {ext.get('format_version')!r}, extension {ext.get('version')!r}; "
                          f"this reader knows {FORMAT} {sorted(FORMAT_VERSIONS)} with {EXTENSION} {EXTENSION_VERSION}")
+    group = _need(ext, "group", path)
+    members = list(_need(group, "members", path))
+    box = ext.get("data_box")
+    for name in members:
+        if name not in root:
+            raise ValueError(f"{path}:{name}: the root lists this lattice and the file has no such array")
     lattices = []
-    for name in ext["group"]["members"]:
+    for j, name in enumerate(members):
+        where = f"{path}:{name}"
         arr = root[name]
-        d = arr.attrs.asdict()["duckn"]
-        axes = d["axes"]
+        d = _need(arr.attrs.asdict(), "duckn", where)
+        axes = _need(d, "axes", where)
         if [a.get("kind") for a in axes] != ["space", "space", "space", "list"]:
-            raise ValueError(f"{path}: {name} is not three space axes and a list axis")
+            raise ValueError(f"{where}: not three space axes and a list axis")
         if d.get("space") != "left-posterior-superior":
-            raise ValueError(f"{path}: {name} is in {d.get('space')!r}, not left-posterior-superior")
+            raise ValueError(f"{where}: in {d.get('space')!r}, not left-posterior-superior")
         e = (d.get("extensions") or {}).get(EXTENSION) or {}
-        v = _decode(arr[:], d.get("value_transforms"), f"{path}:{name}")
+        g = e.get("group") or {}
+        if (g.get("id"), g.get("member"), g.get("members")) != (group.get("id"), j, len(members)):
+            raise ValueError(f"{where}: says it is member {g.get('member')} of {g.get('members')} in {g.get('id')!r}; "
+                             f"the root lists it as {j} of {len(members)} in {group.get('id')!r}")
+        steps = np.array([_need(a, "space_direction", where) for a in axes[:3]], float)
+        origin = np.asarray(_need(d, "space_origin", where), float)
+        if not (np.isfinite(steps).all() and np.isfinite(origin).all()) or abs(np.linalg.det(steps)) < 1e-9:
+            raise ValueError(f"{where}: its placement is not finite or its steps are singular")
+        v = _decode(arr[:], d.get("value_transforms"), where)
+        shape = tuple(int(s) for s in v.shape[:3])
+        extent = None
+        if "extent" in e:
+            lo, hi = tuple(int(x) for x in e["extent"]["lo"]), tuple(int(x) for x in e["extent"]["hi"])
+            if not all(0 <= l < h <= n for l, h, n in zip(lo, hi, shape)):
+                raise ValueError(f"{where}: extent {lo}..{hi} is not a box inside the lattice {shape}")
+            extent = (lo, hi)
+        kernel = tuple(int(k) for k in e["kernel"]) if "kernel" in e else None
+        if box is not None and kernel is not None:
+            want = (tuple(l // k for l, k in zip(box["lo"], kernel)), tuple(-(-h // k) for h, k in zip(box["hi"], kernel)))
+            if extent != want:
+                raise ValueError(f"{where}: extent {extent} is not what the data box gives ({want})")
         th = [a.get("thickness") for a in axes[:3]]
         lattices.append(Lattice(
-            name=name, tokens=v.reshape(-1, v.shape[-1]), shape=tuple(int(s) for s in v.shape[:3]),
-            steps=np.array([a["space_direction"] for a in axes[:3]], float), origin=np.asarray(d["space_origin"], float),
-            extent=(tuple(e["extent"]["lo"]), tuple(e["extent"]["hi"])) if "extent" in e else None,
-            kernel=tuple(e["kernel"]) if "kernel" in e else None,
-            thickness=None if all(t is None for t in th) else tuple(th),
+            name=name, tokens=v.reshape(-1, v.shape[-1]), shape=shape, steps=steps, origin=origin, extent=extent,
+            kernel=kernel, thickness=None if all(t is None for t in th) else tuple(th),
             support_offset=tuple(e["support"]["offset"]) if "support" in e else None,
             space=dict(e.get("space") or {}), metric=e.get("metric", "cosine"), normalized=bool(e.get("normalized", False))))
-    return FieldView(lattices, dict(ext.get("provenance") or {}), ext.get("data_box"), path)
+    if not lattices:
+        raise ValueError(f"{path}: the group lists no lattices")
+    if all(l.kernel is not None for l in lattices):          # every lattice must imply the same model grid
+        rows0, first0 = _model_grid(lattices[0])
+        for l in lattices[1:]:
+            rows, first = _model_grid(l)
+            if not (np.allclose(rows, rows0, atol=1e-6) and np.allclose(first, first0, atol=PLACEMENT_TOLERANCE_MM)):
+                raise ValueError(f"{path}: {l.name} is not placed where {lattices[0].name} puts the model grid - "
+                                 "the lattices disagree about where the patient is")
+    return FieldView(lattices, dict(ext.get("provenance") or {}), box, path)
 
 
 # -- masks on any grid ---------------------------------------------------------------------------
 @dataclass
 class Mask:
-    """``values[i, j, k]`` (boolean, or a fraction in [0, 1]) with ``world_lps = affine @ (i, j, k, 1)``
-    - the form ``feldglas.labels.LabelMap`` has, so a segmentation, a drawn ROI or a CT-grid array
-    all gate alike."""
+    """``values[i, j, k]`` - boolean, or a fraction in [0, 1] - with ``world_lps = affine @ (i, j, k, 1)``:
+    the form ``feldglas.labels.LabelMap`` has, so a segmentation, a drawn ROI or a CT-grid array all
+    gate alike. A label map is not a mask: take structures from it with :func:`structure_mask`."""
 
     values: np.ndarray
     affine_lps: np.ndarray
+
+    def __post_init__(self):
+        self.values = np.asarray(self.values)
+        self.affine_lps = np.asarray(self.affine_lps, float)
+        if self.values.ndim != 3:
+            raise ValueError(f"a mask is a 3-D array, not {self.values.ndim}-D")
+        if self.affine_lps.shape != (4, 4) or not np.isfinite(self.affine_lps).all() \
+                or abs(np.linalg.det(self.affine_lps[:3, :3])) < 1e-12:
+            raise ValueError("a mask's affine must be a finite, non-singular 4 x 4")
+        if self.values.dtype != bool and self.values.size and (self.values.min() < 0 or self.values.max() > 1):
+            raise ValueError(f"mask values run {self.values.min()}..{self.values.max()}; a mask is boolean or a "
+                             "fraction in [0, 1] (a label map: use structure_mask)")
 
     @classmethod
     def from_grid(cls, values, directions, origin) -> "Mask":
@@ -180,70 +270,114 @@ class Mask:
         A = np.eye(4); A[:3, :3] = np.asarray(directions, float).T; A[:3, 3] = np.asarray(origin, float)
         return cls(np.asarray(values), A)
 
+    def at(self, points) -> np.ndarray:
+        """The mask's value at world points (the voxel whose center is nearest); 0 outside the array."""
+        inv = np.linalg.inv(self.affine_lps)
+        ijk = _round(np.asarray(points) @ inv[:3, :3].T + inv[:3, 3])
+        ok = np.all((ijk >= 0) & (ijk < self.values.shape), axis=-1)
+        out = np.zeros(ijk.shape[:-1], np.float32)
+        out[ok] = self.values[tuple(np.moveaxis(ijk[ok], -1, 0))]
+        return out
 
-def structure_mask(labels: LabelMap, *structures: str) -> Mask:
-    """The union of named structures, by NAME (a trailing ``*`` is a prefix), never by label value."""
-    vals = []
-    for s in structures:
-        hit = [v for n, v in labels.names.items() if n.startswith(s[:-1])] if s.endswith("*") else \
-              ([labels.names[s]] if s in labels.names else [])
-        if not hit:
-            raise KeyError(f"no structure matches {s!r} ({len(labels.names)} named)")
-        vals += hit
-    return Mask(np.isin(labels.values, vals), np.asarray(labels.affine_lps, float))
+
+def structure_mask(labels: LabelMap, *structures: str, optional=()) -> Mask:
+    """The union of named structures from a label map - usually a ``.seg.nrrd`` read by
+    :func:`read_seg_nrrd`, haversack's (one layer) or 3D Slicer's (layered, when segments overlap) -
+    by NAME (a trailing ``*`` is a prefix), never by label value, and across layers. Every name in
+    ``structures`` must be there; names in ``optional`` join when present and are skipped when not -
+    a lesion segment is absent from a scan with no lesion (haversack lists only the structures a
+    scan has). The organ with its lesion segments:
+    ``structure_mask(labels, "kidney_left", optional=["kidney_cyst_left"])``."""
+    names = list(structures) + [n for n in optional
+                                if (any(m.startswith(n[:-1]) for m in labels.names) if n.endswith("*") else n in labels.names)]
+    if not names:
+        raise ValueError("no structure to make a mask of: every name was optional and none is in this map")
+    return Mask(labels.mask(*names), np.asarray(labels.affine_lps, float))
+
+
+def seg_mask(path, *structures: str, optional=(), names=None) -> Mask:
+    """``structure_mask(read_seg_nrrd(path, names), *structures, optional=...)``: a region straight
+    from a ``.seg.nrrd`` (``names`` only for a plain labelmap with no segment table)."""
+    return structure_mask(read_seg_nrrd(path, names), *structures, optional=optional)
+
+
+def _layers_at(lattice: Lattice, labels: LabelMap) -> np.ndarray:
+    """``(layers, N)``: the label under each token's center on every layer of the map (0 outside)."""
+    stack = labels.values if labels.layered else labels.values[None]
+    inv = np.linalg.inv(np.asarray(labels.affine_lps, float))
+    ijk = _round(lattice.centers @ inv[:3, :3].T + inv[:3, 3])
+    ok = np.all((ijk >= 0) & (ijk < stack.shape[1:]), axis=1)
+    out = np.zeros((len(stack), len(ijk)), stack.dtype)
+    out[:, ok] = stack[(slice(None), *ijk[ok].T)]
+    return out
 
 
 def labels_at(lattice: Lattice, labels) -> np.ndarray:
-    """The label (or mask value) under each token's CENTER; 0 outside the map."""
-    values = labels.values
+    """The label (or mask value) under each token's CENTER; 0 outside the map. A layered map has no
+    single label per voxel (its segments overlap): use :func:`structure_mask` with it."""
+    if isinstance(labels, LabelMap) and labels.layered:
+        raise ValueError("a layered segmentation has no single label per voxel: use structure_mask")
+    values = np.asarray(labels.values)
     inv = np.linalg.inv(np.asarray(labels.affine_lps, float))
-    ijk = np.rint(lattice.centers @ inv[:3, :3].T + inv[:3, 3]).astype(np.int64)
+    ijk = _round(lattice.centers @ inv[:3, :3].T + inv[:3, 3])
     ok = np.all((ijk >= 0) & (ijk < values.shape), axis=1)
     out = np.zeros(len(ijk), values.dtype)
     out[ok] = values[tuple(ijk[ok].T)]
     return out
 
 
-def occupancy(lattice: Lattice, mask: Mask, samples_per_token: int = 4) -> np.ndarray:
-    """``(N,)``: the fraction of each token's box inside ``mask``, estimated from the mask's voxel
-    centers (sub-sampled to about ``samples_per_token`` per token step along each axis) sent to the
-    token they fall in. Only the mask's bounding box, grown by a token, is visited."""
-    v = np.asarray(mask.values)
-    A = np.asarray(mask.affine_lps, float)
-    spacing = np.linalg.norm(A[:3, :3], axis=0)
-    step = float(np.linalg.norm(lattice.steps, axis=1).min())
-    stride = np.maximum((step / samples_per_token / spacing).astype(int), 1)
+def occupancy(lattice: Lattice, mask: Mask, points_per_axis=None, max_points: int = 32) -> np.ndarray:
+    """``(N,)``: the fraction of each token's BOX inside ``mask`` - its volume, estimated at a regular
+    grid of points inside the box (sub-cell centers) where the mask is read (0 outside its array).
+    Sampling the token, not the mask, is what makes every denominator the box: a mask array cropped to
+    an ROI, or coarser than the tokens, reads right. The default puts points at most 0.75 of the mask's
+    finest spacing apart (at most ``max_points`` per axis), so a single mask voxel inside a box is
+    always hit; with ``points_per_axis`` a multiple of a model-grid kernel, points sit at voxel centers
+    and the result is exact. Only tokens whose box can reach the mask's nonzero voxels are visited."""
+    v = mask.values
+    A = mask.affine_lps
+    out = np.zeros(len(lattice.tokens), np.float32)
     nz = np.nonzero(v)
     if not len(nz[0]):
-        return np.zeros(len(lattice.tokens), np.float32)
-    grow = np.ceil(np.linalg.norm(lattice.steps, axis=1).max() / spacing).astype(int)
-    lo = np.maximum(np.array([a.min() for a in nz]) - grow, 0)
-    hi = np.minimum(np.array([a.max() for a in nz]) + grow + 1, v.shape)
-    n_all = np.zeros(len(lattice.tokens)); n_in = np.zeros(len(lattice.tokens))
-    ii, jj = np.meshgrid(np.arange(lo[0], hi[0], stride[0]), np.arange(lo[1], hi[1], stride[1]), indexing="ij")
-    for k in range(lo[2], hi[2], stride[2]):              # one slab at a time: megabytes, not gigabytes
-        ijk = np.stack([ii.ravel(), jj.ravel(), np.full(ii.size, k)], 1)
-        t = lattice.index_of(ijk @ A[:3, :3].T + A[:3, 3])
-        ok = np.all((t >= 0) & (t < lattice.shape), axis=1)
-        flat = np.ravel_multi_index(tuple(t[ok].T), lattice.shape)
-        n_all += np.bincount(flat, minlength=len(n_all))
-        n_in += np.bincount(flat, weights=v[tuple(ijk[ok].T)].astype(float), minlength=len(n_in))
-    with np.errstate(invalid="ignore", divide="ignore"):
-        return np.where(n_all > 0, n_in / np.maximum(n_all, 1), 0.0).astype(np.float32)
+        return out
+    step = np.linalg.norm(lattice.steps, axis=1)
+    if points_per_axis is None:
+        fine = float(np.linalg.norm(A[:3, :3], axis=0).min())
+        s = np.minimum(np.maximum(np.ceil(step / (0.75 * fine) - 1e-9), 2), max_points).astype(int)
+    else:
+        s = np.broadcast_to(np.asarray(points_per_axis, int), (3,))
+    lo = np.array([a.min() for a in nz]) - 0.5
+    hi = np.array([a.max() for a in nz]) + 0.5
+    corners = np.array([[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])])
+    ci = lattice.continuous_index(corners @ A[:3, :3].T + A[:3, 3])
+    t_lo = np.maximum(np.floor(ci.min(0) - 0.5).astype(int), 0)
+    t_hi = np.minimum(np.ceil(ci.max(0) + 0.5).astype(int) + 1, lattice.shape)
+    if np.any(t_hi <= t_lo):
+        return out
+    cand = np.stack(np.meshgrid(*[np.arange(a, b) for a, b in zip(t_lo, t_hi)], indexing="ij"), -1).reshape(-1, 3)
+    grid = np.stack(np.meshgrid(*[(np.arange(n) + 0.5) / n - 0.5 for n in s], indexing="ij"), -1).reshape(-1, 3)
+    offsets = grid @ lattice.steps                          # sub-cell centers, world, around a token's center
+    flat = np.ravel_multi_index(tuple(cand.T), lattice.shape)
+    centers = lattice.origin + cand @ lattice.steps
+    chunk = max(1, int(4_000_000 // len(offsets)))
+    for a in range(0, len(cand), chunk):
+        pts = centers[a:a + chunk, None, :] + offsets[None]
+        out[flat[a:a + chunk]] = mask.at(pts).mean(1)
+    return out
 
 
 def tokens_in(lattice: Lattice, mask: Mask, rule="center", min_occupancy: float = 0.5,
-              drop_boundary: bool = False) -> np.ndarray:
-    """Indices of in-extent tokens the mask owns: ``"center"`` - the token's center is inside;
-    ``"touch"`` - any of its box is (the gate RADAR's head was trained on); ``"occupancy"`` - at
-    least ``min_occupancy`` of its box is."""
+              drop_boundary: bool = False, points_per_axis=None) -> np.ndarray:
+    """Indices of in-extent tokens the mask owns: ``"center"`` - the mask at the token's center is at
+    least a half; ``"touch"`` - any of its box is inside (the gate RADAR's head was trained on);
+    ``"occupancy"`` - at least ``min_occupancy`` of its box is."""
     keep = lattice.interior if drop_boundary else lattice.in_extent
     if rule == "center":
-        sel = labels_at(lattice, mask).astype(float) > 0.5
+        sel = mask.at(lattice.centers) >= 0.5
     elif rule == "touch":
-        sel = occupancy(lattice, mask) > 0
+        sel = occupancy(lattice, mask, points_per_axis) > 0
     elif rule == "occupancy":
-        sel = occupancy(lattice, mask) >= min_occupancy
+        sel = occupancy(lattice, mask, points_per_axis) >= min_occupancy
     else:
         raise ValueError(f"rule {rule!r}: center, touch or occupancy")
     return np.flatnonzero(keep & sel)
@@ -251,43 +385,61 @@ def tokens_in(lattice: Lattice, mask: Mask, rule="center", min_occupancy: float 
 
 # -- vectors -------------------------------------------------------------------------------------
 def unit(x) -> np.ndarray:
+    """Rows at unit length; a zero or non-finite row is refused - its direction is undefined, and one
+    NaN once made a reference's threshold NaN, so that nothing was ever flagged."""
     x = np.asarray(x, np.float32)
-    return x / np.linalg.norm(x, axis=-1, keepdims=True)
+    n = np.linalg.norm(x, axis=-1, keepdims=True)
+    bad = ~np.isfinite(n) | (n == 0)
+    if bad.any():
+        raise ValueError(f"{int(bad.sum())} vector(s) are zero or not finite - they have no direction")
+    return x / n
 
 
-def organ_vectors(f: FieldView, labels: LabelMap, lattice: int = -1, min_tokens: int = 5,
+def organ_vectors(f: FieldView, labels: LabelMap, lattice: int | None = None, min_tokens: int = 5,
                   structures=None) -> dict[str, np.ndarray]:
-    """One vector per structure on one lattice, the README's recipe exactly: tokens whose center is
-    in the structure, unit length, averaged (not re-normalized), minus the body's mean unit token
-    (not re-normalized), then unit length. Compare two by their dot product."""
-    lat = f.lattices[lattice]
-    lab = labels_at(lat, labels)
+    """One vector per structure on one lattice (default: the finest), the README's recipe exactly:
+    in-extent tokens whose center is in the structure (at least ``min_tokens``), unit length,
+    averaged (not re-normalized), minus the mean unit token of the body - every labeled structure -
+    (not re-normalized), then unit length. A structure indistinguishable from the body's mean has no
+    direction and is left out. Compare two vectors by their dot product."""
+    lat = f.fine if lattice is None else f.lattices[lattice]
+    lab = _layers_at(lat, labels)                        # (layers, N): a layered map's segments may overlap
     t = unit(lat.tokens)
     inside = lat.in_extent
-    ref = t[inside & (lab > 0)].mean(0)
+    body = inside & (lab > 0).any(0)
+    if not body.any():
+        raise ValueError("no in-extent token lies in any labeled structure: is the label map on this CT?")
+    ref = t[body].mean(0)
     out = {}
     for name, value in labels.names.items():
         if structures is not None and name not in structures:
             continue
-        sel = inside & (lab == value)
+        sel = inside & (lab[labels.layer_of.get(name, 0) if labels.layered else 0] == value)
         if sel.sum() >= min_tokens:
-            out[name] = unit(t[sel].mean(0) - ref)
+            d = t[sel].mean(0) - ref
+            if np.linalg.norm(d) > 1e-6:
+                out[name] = d / np.linalg.norm(d)
     return out
 
 
-def knn_distance(x: np.ndarray, reference: np.ndarray, k: int = 5, chunk: int = 4096) -> np.ndarray:
-    """``1 - mean cosine to the k most similar reference tokens``, for unit-length rows."""
+def knn_distance(x: np.ndarray, reference: np.ndarray, k: int = 5) -> np.ndarray:
+    """``1 - mean cosine to the k most similar reference tokens``, for unit-length rows. Chunked so a
+    chunk's similarity matrix stays near 64 MB whatever the reference's size."""
+    if not 1 <= k <= len(reference):
+        raise ValueError(f"k = {k} with {len(reference)} reference tokens")
     out = np.empty(len(x), np.float32)
+    chunk = max(1, int(16_000_000 // max(len(reference), 1)))
     for a in range(0, len(x), chunk):
         s = x[a:a + chunk] @ reference.T
-        out[a:a + chunk] = 1.0 - np.sort(s, axis=1)[:, -k:].mean(1)
+        top = np.partition(s, len(reference) - k, axis=1)[:, -k:]
+        out[a:a + chunk] = 1.0 - top.mean(1)
     return out
 
 
 # -- normal tissue -------------------------------------------------------------------------------
 @dataclass
 class Site:
-    center: np.ndarray               # LPS mm, the mean of its flagged tokens
+    center: np.ndarray               # LPS mm, the mean of its flagged tokens' centers
     tokens: int
     peak: float                      # the largest distance among them
 
@@ -306,19 +458,35 @@ class Scores:
 
 
 def _sites(centers, distance, flagged, radius) -> list[Site]:
+    """Flagged tokens joined into sites by SINGLE LINKAGE: two tokens within ``radius`` mm are one
+    site (so a site can chain further). A grid of ``radius`` cells keeps it near-linear; strongest
+    site first."""
     idx = np.flatnonzero(flagged)
-    label = -np.ones(len(idx), int); n = 0
-    for a in range(len(idx)):
-        if label[a] >= 0:
-            continue
-        stack = [a]; label[a] = n
-        while stack:
-            b = stack.pop()
-            near = np.flatnonzero((label < 0) & (np.linalg.norm(centers[idx] - centers[idx[b]], axis=1) <= radius))
-            label[near] = n; stack.extend(near.tolist())
-        n += 1
-    sites = [Site(centers[idx[label == i]].mean(0), int((label == i).sum()), float(distance[idx[label == i]].max()))
-             for i in range(n)]
+    if not len(idx):
+        return []
+    c = centers[idx]
+    parent = np.arange(len(idx))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]; a = parent[a]
+        return a
+    cells: dict[tuple, list[int]] = {}
+    for a, key in enumerate(map(tuple, np.floor(c / radius).astype(int))):
+        cells.setdefault(key, []).append(a)
+    for key, members in cells.items():
+        near = [b for dz in (-1, 0, 1) for dy in (-1, 0, 1) for dx in (-1, 0, 1)
+                for b in cells.get((key[0] + dz, key[1] + dy, key[2] + dx), ())]
+        near = np.asarray(near)
+        for a in members:
+            hit = near[np.linalg.norm(c[near] - c[a], axis=1) <= radius]
+            for b in hit:
+                ra, rb = find(a), find(int(b))
+                if ra != rb:
+                    parent[rb] = ra
+    roots = np.array([find(a) for a in range(len(idx))])
+    sites = [Site(c[roots == r].mean(0), int((roots == r).sum()), float(distance[idx[roots == r]].max()))
+             for r in np.unique(roots)]
     return sorted(sites, key=lambda s: -s.peak)
 
 
@@ -333,26 +501,30 @@ class Reference:
     threshold: float
     held_out: np.ndarray             # every held-out normal token's distance
     key: tuple                       # the lattice's comparability key (model, weights, layer, stage)
-    lattice: int = -1
+    lattice: int | None = None       # None: each field's finest lattice
     k: int = 5
     min_occupancy: float = 0.5
     drop_boundary: bool = True
     meta: dict = _field(default_factory=dict)
 
+    @staticmethod
+    def _lattice(f: FieldView, lattice) -> Lattice:
+        return f.fine if lattice is None else f.lattices[lattice]
+
     @classmethod
-    def build(cls, normals, lattice: int = -1, k: int = 5, min_occupancy: float = 0.5,
+    def build(cls, normals, lattice: int | None = None, k: int = 5, min_occupancy: float = 0.5,
               drop_boundary: bool = True) -> "Reference":
         """``normals``: ``(FieldView, Mask)`` pairs - each normal scan and its normal-tissue region
         (an organ from a segmentation, eroded to keep tokens interior, or a drawn ROI)."""
         normals = list(normals)
         if len(normals) < 2:
             raise ValueError("a reference needs at least two normal scans: its threshold is set by leaving one out")
-        keys = {f.lattices[lattice].key() for f, _ in normals}
+        keys = {cls._lattice(f, lattice).key() for f, _ in normals}
         if len(keys) != 1:
             raise ValueError(f"normals from different encoders or layers cannot make one reference: {sorted(keys)}")
         parts = []
         for f, m in normals:
-            lat = f.lattices[lattice]
+            lat = cls._lattice(f, lattice)
             i = tokens_in(lat, m, "occupancy", min_occupancy, drop_boundary)
             if not len(i):
                 raise ValueError(f"{f.path}: no token of its region")
@@ -365,11 +537,15 @@ class Reference:
 
     def score(self, f: FieldView, region: Mask, radius: float = 15.0) -> Scores:
         """Every token of ``region`` in ``f``, its distance from normal, and the flagged tokens
-        grouped into sites (within ``radius`` mm), strongest first. A site is a place to look."""
-        lat = f.lattices[self.lattice]
+        grouped into sites (within ``radius`` mm), strongest first. A site is a place to look. An
+        empty region is refused: no token scored is not "normal"."""
+        lat = self._lattice(f, self.lattice)
         if lat.key() != self.key:
             raise ValueError(f"{f.path}: tokens of {lat.key()} cannot be scored against a reference of {self.key}")
         i = tokens_in(lat, region, "occupancy", self.min_occupancy, self.drop_boundary)
+        if not len(i):
+            raise ValueError(f"{f.path}: no token of the region (in the extent{', off its boundary' if self.drop_boundary else ''})"
+                             " - nothing was scored")
         c = lat.centers[i]
         d = knn_distance(unit(lat.tokens[i]), self.tokens, self.k)
         return Scores(i, c, d, self.threshold, _sites(c, d, d > self.threshold, radius))

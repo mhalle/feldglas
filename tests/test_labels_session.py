@@ -12,15 +12,27 @@ from feldglas.labels import GridLabels, read_seg_nrrd
 from feldglas.session import Session
 
 
-def write_seg(path, values, affine, names, extra="", dimension=3, space="left-posterior-superior"):
-    d = affine[:3, :3].T
+def write_seg(path, values, affine, names, extra="", dimension=None, space="left-posterior-superior", layers=None):
+    """A .seg.nrrd as haversack writes it (3-D, one layer) or, with ``values`` 4-D (layer first) and
+    ``layers`` {name: layer}, as 3D Slicer writes overlapping segments. ``affine`` is LPS; with
+    ``space`` RAS the file's directions and origin are written in RAS, as such a file would hold them."""
+    values = np.asarray(values)
+    layered = values.ndim == 4
+    dimension = dimension or values.ndim
+    A = np.array(affine, float)
+    if space == "right-anterior-superior":
+        A[:2, :] *= -1
+    d = A[:3, :3].T
+    dirs = " ".join("(" + ",".join(repr(float(x)) for x in row) + ")" for row in d)
     head = ["NRRD0004", "# a test file", "type: unsigned char", f"dimension: {dimension}", f"space: {space}",
             "sizes: " + " ".join(str(v) for v in values.shape),
-            "space directions: " + " ".join("(" + ",".join(repr(float(x)) for x in row) + ")" for row in d),
-            "kinds: domain domain domain", "encoding: gzip",
-            "space origin: (" + ",".join(repr(float(x)) for x in affine[:3, 3]) + ")"]
+            "space directions: " + ("none " if layered else "") + dirs,
+            "kinds: " + ("list " if layered else "") + "domain domain domain", "encoding: gzip",
+            "space origin: (" + ",".join(repr(float(x)) for x in A[:3, 3]) + ")"]
     for i, (n, v) in enumerate(names.items()):
         head += [f"Segment{i}_LabelValue:={v}", f"Segment{i}_Name:={n}"]
+        if layers is not None:
+            head.append(f"Segment{i}_Layer:={layers[n]}")
     if extra:
         head.append(extra)
     path.write_bytes(("\n".join(head) + "\n\n").encode() + gzip.compress(np.asarray(values, np.uint8).tobytes(order="F")))
@@ -60,8 +72,23 @@ class TestLabels(unittest.TestCase):
         with self.assertRaises(KeyError):
             gl.mask("spleen")
 
+    def test_ras_and_layered_files_are_read_and_the_rest_refused_by_name(self):
+        lps = read_seg_nrrd(write_seg(self.dir / "l.seg.nrrd", self.values, self.A, self.names))
+        ras = read_seg_nrrd(write_seg(self.dir / "r.seg.nrrd", self.values, self.A, self.names, space="right-anterior-superior"))
+        np.testing.assert_allclose(ras.affine_lps, lps.affine_lps)
+        np.testing.assert_array_equal(ras.values, lps.values)
+        lesion = np.zeros_like(self.values); lesion[20:30, 20:30, 10:20] = 1          # drawn OVER the liver
+        lay = read_seg_nrrd(write_seg(self.dir / "y.seg.nrrd", np.stack([self.values, lesion]), self.A,
+                                      {**self.names, "liver_lesion": 1}, layers={"liver": 0, "kidney_left": 0, "liver_lesion": 1}))
+        self.assertTrue(lay.layered)
+        np.testing.assert_array_equal(lay.mask("liver_lesion"), lesion == 1)
+        np.testing.assert_array_equal(lay.mask("liver", "liver_lesion"), (self.values == 1) | (lesion == 1))
+        self.assertTrue(((self.values == 1) & (lesion == 1)).any())                 # they overlap: two layers needed
+        with self.assertRaisesRegex(ValueError, "layered"):
+            lay.on_grid(self.field.grid)
+
     def test_what_is_not_haversacks_is_refused_by_name(self):
-        for kw, word in (({"dimension": 4}, "layered"), ({"space": "right-anterior-superior"}, "left-posterior-superior")):
+        for kw, word in (({"dimension": 4}, "layered"), ({"space": "scanner-xyz"}, "left-posterior-superior")):
             with self.assertRaises(ValueError) as e:
                 read_seg_nrrd(write_seg(self.dir / "c.seg.nrrd", self.values, self.A, self.names, **kw))
             self.assertIn(word, str(e.exception))
