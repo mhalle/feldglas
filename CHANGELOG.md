@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.2] - 2026-09-23
+
+- **rankfield is pinned at v0.3.5, as haversack pins it**, for the reason 0.1.1 gave: uv
+  resolves a git dependency's own `[tool.uv.sources]`, so a feldglas pin that differs from
+  haversack's makes `haversack[encode]` unresolvable. rankfield 0.3.5 sizes its encoder slabs
+  from a memory budget and reads fields straight from a store; feldglas uses only its
+  `Geometry`, which is unchanged, so nothing feldglas computes changes.
+- The design record notes haversack's phase 2 (encode jobs on the local server) as landed.
+- This entry was committed after the `v0.1.2` tag, which does not carry it.
+
 ## [0.1.1] - 2026-09-23
 
 - **rankfield is pinned at v0.3.3, as haversack pins it.** uv resolves a git dependency's own
