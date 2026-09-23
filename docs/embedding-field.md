@@ -141,9 +141,12 @@ ride in the `embedding` extension or the group's attributes, and move when it la
   feldglas for the writer only; feldglas never imports haversack (today its null adapter does - that
   cycle goes). One author per thing: feldglas the format, haversack the encoders. No torch in feldglas.
 - **Names: haversack's task grammar, `family[.version]:name[@revision]`,** adopted now, while the
-  names in fields and references are few. `radar:generalist@<hf-commit>` (RADAR's released
-  checkpoint; the name follows its Hugging Face repository, `radar-generalist/RADAR` - makers' names
-  are not renamed); `ts.v2:total_fast` is the encoder of that network (stages 2-4), `ts.v2:total`
+  names in fields and references are few. `radar:pretrain@<hf-commit>` (RADAR's released
+  checkpoint; named for the checkpoint FILE, `checkpoint_radar_pretrain.pth`, as the repository
+  `radar-generalist/RADAR` also holds `radar_plus` and a fine-tuned checkpoint that would each be a
+  `radar:` encoder of their own - makers' names are not renamed. First written here as
+  `radar:generalist`, after the repository; corrected 2026-09-23 when haversack's registry was
+  built); `ts.v2:total_fast` is the encoder of that network (stages 2-4), `ts.v2:total`
   the 1.5 mm variant. `segment X` and `encode X` name the same network; the verb decides labels or
   tokens. `haversack encoders` lists what can be encoded, apart from `haversack tasks`. Old names
   resolve through an alias table (`radar`, `null-totalsegmentator`, `null-totalsegmentator-1.5mm`),
@@ -160,9 +163,9 @@ ride in the `embedding` extension or the group's attributes, and move when it la
   after `test_engine_completeness`. The null model's tiling and stage extraction are generic over
   nnU-Net networks: one "nnU-Net encoder" module makes every nnU-Net catalog haversack has (ts.v2,
   ts.v3, moose, cads, mrsegmentator) encodable by a registry row naming its stages.
-- **Interface.** `haversack encode INPUT --encoder radar:generalist -o scan.zarr.zip [--int8]
+- **Interface.** `haversack encode INPUT --encoder radar:pretrain -o scan.zarr.zip [--int8]
   [--device] [--dtype]` (INPUT: any haversack input - a file, DICOM, `idc:`/`tcia:`); `haversack
-  encoders`; `haversack weights fetch radar:generalist`; `haversack remote encode`. Server: `POST
+  encoders`; `haversack weights fetch radar:pretrain`; `haversack remote encode`. Server: `POST
   /v1/jobs` with `kind=encode`; `GET|HEAD /v1/<source>/<id>/<encoder>/field.zarr.zip` (ETag the
   content digest); `GET /v1/encoders`. `feldglas score --haversack ... --series ...` then takes the
   field and the labels from one server.
@@ -175,13 +178,24 @@ ride in the `embedding` extension or the group's attributes, and move when it la
   move. Not a DELIVERABLE of a segmentation: those are light renders from the input and labels in
   memory, and a field needs a GPU, 1.5 GB of weights and the input - gone on a cache hit.
 - **The head.** RADAR's attention head and finding-text table are cut from the same checkpoint;
-  `haversack weights fetch radar:generalist` produces them too, and feldglas (whose numpy head
+  `haversack weights fetch radar:pretrain` produces them too, and feldglas (whose numpy head
   applies them, client-side) reads them from where haversack puts them.
 - **Migration.** feldglas's encode halves (`adapters/radar.py`, `adapters/null.py` encode parts,
   `tools/*_encode_local.py`, the preprocessing borrowed from `tools/radar_export_modal.py`) move to
   haversack; the study tools call haversack until phase 2 makes the Modal exporters haversack jobs.
 - **Prerequisite:** feldglas on GitHub with a tag, so haversack can pin it (its CI and Modal images
   install siblings from pinned Git URLs). Development may start against an editable install.
+- **Phase 1 built (2026-09-23, haversack branch `claude/encode`, not landed).** `haversack.encoders`:
+  `registry` (torch-free specs), `weights` (pinned HF file: fetch streamed, hashed and capped at the
+  pinned size, `--from` adopts a copy, a sidecar spares re-hashing), `pipeline` (the one path; writes
+  through `feldglas.store`), `radar`, `nnunet`; commands `encode` and `encoders`; `weights
+  fetch/remove/list` take an encoder. On sample2's CT all three encoders' tokens are IDENTICAL to
+  feldglas's tools' (RADAR on the real checkpoint; `ts.v2:total_fast` and `ts.v2:total` on MPS fp16,
+  every lattice; grids within 5e-10 mm), and `ts.v2:total` takes 18 s where the tool took 55 s -
+  the decoder no longer runs. Found building it: **feldglas 0.1.0's own `[tool.uv.sources]` pins
+  rankfield v0.3.2 while haversack pins v0.3.3, and uv refuses the two git URLs**, so haversack's
+  `encode` extra needs feldglas 0.1.1 with rankfield at v0.3.3 (v0.3.2's code). Keep the sibling
+  pins equal on every tag bump.
 
 ## What is built, and what is not
 

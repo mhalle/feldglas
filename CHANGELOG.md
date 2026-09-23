@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.1] - 2026-09-23
+
+- **rankfield is pinned at v0.3.3, as haversack pins it.** uv resolves a git dependency's own
+  `[tool.uv.sources]`, so feldglas 0.1.0's v0.3.2 and haversack's v0.3.3 were two URLs for one
+  package and `haversack[encode]` could not be installed at all. v0.3.3 is v0.3.2's code with
+  duckn pinned at v0.5.1, which feldglas already uses; nothing feldglas computes changes.
+- The design record names RADAR's encoder `radar:pretrain` (after its checkpoint), not
+  `radar:generalist`.
+
 ## [0.1.0] - 2026-09-23
 
 The first release, so that haversack can pin feldglas for the field writer when encoding moves
