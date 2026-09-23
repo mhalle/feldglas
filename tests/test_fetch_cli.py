@@ -91,7 +91,7 @@ class Fetch(Base):
         self.assertEqual(self.server.seen[-1]["inm"], tag_a)                      # revalidated ITS copy: a 304, no body
 
     def test_not_cached_on_the_server_says_so(self):
-        with self.assertRaisesRegex(FileNotFoundError, r"not found \(404\).*not cached"):
+        with self.assertRaisesRegex(FileNotFoundError, r"not found \(404\).*wrong source, series or task.*not cached yet"):
             fetch.local(self.server.url + "/v1/idc/x/ts.v2:total/labels.seg.nrrd")
 
     def test_a_token_goes_to_its_origin_only_and_never_over_http_elsewhere(self):
@@ -146,7 +146,7 @@ class Command(Base):
     def test_vectors_by_labels_url(self):
         r = self.run_cli("vectors", self.server.url + "/s0.zarr.zip", "--labels", self.server.url + "/s0.seg.nrrd", "--json")
         self.assertEqual(r.exit_code, 0, r.output)
-        self.assertEqual(set(json.loads(r.output)["nearest"]), {"liver", "spleen"})
+        self.assertEqual(set(json.loads(r.output)["structures"]), {"liver", "spleen"})
 
     def test_reference_build_then_score_a_planted_anomaly_from_a_haversack_path(self):
         u = self.server.url
@@ -171,7 +171,7 @@ class Command(Base):
         r = self.run_cli("vectors", self.server.url + "/s0.zarr.zip", "--haversack", self.server.url,
                          "--series", "idc:nothing", "--task", "ts.v2:total")
         self.assertEqual(r.exit_code, 1)
-        self.assertIn("not cached", r.output); self.assertNotIn("Traceback", r.output)
+        self.assertIn("not cached yet", r.output); self.assertNotIn("Traceback", r.output)
         r = self.run_cli("vectors", self.server.url + "/s0.zarr.zip")
         self.assertEqual(r.exit_code, 2); self.assertIn("labels are needed", r.output)
         r = self.run_cli("score", self.server.url + "/s0.zarr.zip", "--labels", self.server.url + "/s0.seg.nrrd",

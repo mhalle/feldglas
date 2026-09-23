@@ -38,6 +38,15 @@ a path or an `http(s)://` URL for every file - a haversack server's result path 
 `<server>/v1/<source>/<id>/<task>/labels.seg.nrrd`, on its public twin or a local `haversack serve`.
 Such a file's ETag is its content digest: fetch it once, then revalidate with `If-None-Match`.
 
+For an agent driving the command: start with `feldglas health` (exit 1 when anything is wrong);
+give every command `--json` and it prints ONE JSON object on stdout - `{"ok": true, "warnings":
+[...], ...}` or `{"ok": false, "error": "...", "exit_code": 1}`; exit 2 is a usage error. Labels
+whose grid is not the field's recorded CT are refused (they would gate another scan's anatomy), a
+reference is refused for structures it was not built for, and what cannot be vouched for - less
+erosion than the reference's, a field that is one of the reference's own normals, most of a region
+flagged (suspect the protocol) - is named in `warnings`. `feldglas info` describes a reference too:
+its normals, and which one set its threshold.
+
 - The root `zarr.json`'s attributes hold `duckn` metadata. Its `extensions.embedding`:
   - `group`: `id` (the field's) and `members`, the lattice arrays' names, in order. Each lattice's
     own `group` repeats `id` and gives its place: `member` (its index in that list) and `members`

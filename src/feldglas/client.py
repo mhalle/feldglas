@@ -177,7 +177,7 @@ def open_field(path, token: str | None = None) -> FieldView:
     Refuses a format, version or value transform it does not know, rather than guess at it."""
     import zarr
     from .fetch import local
-    path = str(local(path, token))                            # an http(s) URL is fetched into the cache
+    path = str(local(path, token, expect="zip"))              # an http(s) URL is fetched into the cache
     if not pathlib.Path(path).is_file():
         raise FileNotFoundError(f"{path}: no such field")
     root = zarr.open_group(store=zarr.storage.ZipStore(path, mode="r"), mode="r")
@@ -302,6 +302,25 @@ def seg_mask(path, *structures: str, optional=(), names=None, token: str | None 
     return structure_mask(read_seg_nrrd(path, names, token=token), *structures, optional=optional)
 
 
+def grid_mismatch(f: FieldView, labels) -> str | None:
+    """Why a label map is NOT on the CT this field was computed from - or None when its grid is the
+    field's recorded input grid (or the field recorded none: then nothing can be checked, and the
+    caller should say so). A mask from another scan gates the wrong anatomy silently: a review
+    scored one patient's field with another's labels - 680 tokens "flagged", exit 0 (2026-09-23)."""
+    g = f.input_grid
+    if not g:
+        return None
+    shape = tuple(int(v) for v in np.asarray(labels.values).shape[-3:])
+    A = np.asarray(labels.affine_lps, float)
+    D = np.asarray(g["directions"], float)
+    if shape != tuple(g["shape"]):
+        return f"the labels are {shape} voxels and the field's CT was {tuple(g['shape'])}"
+    if not np.allclose(A[:3, :3].T, D, atol=1e-3) or not np.allclose(A[:3, 3], g["origin"], atol=0.05):
+        return (f"the labels are placed elsewhere than the field's CT (origin {np.round(A[:3, 3], 2).tolist()} "
+                f"against {np.round(g['origin'], 2).tolist()})")
+    return None
+
+
 def _layers_at(lattice: Lattice, labels: LabelMap) -> np.ndarray:
     """``(layers, N)``: the label under each token's center on every layer of the map (0 outside)."""
     stack = labels.values if labels.layered else labels.values[None]
@@ -397,12 +416,13 @@ def unit(x) -> np.ndarray:
 
 
 def organ_vectors(f: FieldView, labels: LabelMap, lattice: int | None = None, min_tokens: int = 5,
-                  structures=None) -> dict[str, np.ndarray]:
+                  structures=None, counts: dict | None = None) -> dict[str, np.ndarray]:
     """One vector per structure on one lattice (default: the finest), the README's recipe exactly:
     in-extent tokens whose center is in the structure (at least ``min_tokens``), unit length,
     averaged (not re-normalized), minus the mean unit token of the body - every labeled structure -
     (not re-normalized), then unit length. A structure indistinguishable from the body's mean has no
-    direction and is left out. Compare two vectors by their dot product."""
+    direction and is left out. Compare two vectors by their dot product. ``counts``, if given, is
+    filled with every structure's token count (those below ``min_tokens`` included)."""
     lat = f.fine if lattice is None else f.lattices[lattice]
     lab = _layers_at(lat, labels)                        # (layers, N): a layered map's segments may overlap
     t = unit(lat.tokens)
@@ -416,6 +436,8 @@ def organ_vectors(f: FieldView, labels: LabelMap, lattice: int | None = None, mi
         if structures is not None and name not in structures:
             continue
         sel = inside & (lab[labels.layer_of.get(name, 0) if labels.layered else 0] == value)
+        if counts is not None:
+            counts[name] = int(sel.sum())
         if sel.sum() >= min_tokens:
             d = t[sel].mean(0) - ref
             if np.linalg.norm(d) > 1e-6:
@@ -443,6 +465,7 @@ class Site:
     center: np.ndarray               # LPS mm, the mean of its flagged tokens' centers
     tokens: int
     peak: float                      # the largest distance among them
+    members: np.ndarray | None = None  # positions of its tokens in the scores' arrays
 
 
 @dataclass
@@ -486,7 +509,7 @@ def _sites(centers, distance, flagged, radius) -> list[Site]:
                 if ra != rb:
                     parent[rb] = ra
     roots = np.array([find(a) for a in range(len(idx))])
-    sites = [Site(c[roots == r].mean(0), int((roots == r).sum()), float(distance[idx[roots == r]].max()))
+    sites = [Site(c[roots == r].mean(0), int((roots == r).sum()), float(distance[idx[roots == r]].max()), idx[roots == r])
              for r in np.unique(roots)]
     return sorted(sites, key=lambda s: -s.peak)
 
@@ -507,6 +530,7 @@ class Reference:
     min_occupancy: float = 0.5
     drop_boundary: bool = True
     meta: dict = _field(default_factory=dict)
+    centers: np.ndarray | None = None  # (M, 3) LPS mm of each normal token: where a large held-out distance is
 
     @staticmethod
     def _lattice(f: FieldView, lattice) -> Lattice:
@@ -523,19 +547,39 @@ class Reference:
         keys = {cls._lattice(f, lattice).key() for f, _ in normals}
         if len(keys) != 1:
             raise ValueError(f"normals from different encoders or layers cannot make one reference: {sorted(keys)}")
-        parts = []
+        sources = [f.provenance.get("source") or f.path for f, _ in normals]
+        if len(set(sources)) != len(sources):
+            raise ValueError(f"the same scan is listed twice among the normals ({sorted({x for x in sources if sources.count(x) > 1})}): "
+                             "it would count its own tokens as normal and set the threshold too low")
+        parts, where = [], []
         for f, m in normals:
             lat = cls._lattice(f, lattice)
             i = tokens_in(lat, m, "occupancy", min_occupancy, drop_boundary)
             if not len(i):
                 raise ValueError(f"{f.path}: no token of its region")
-            parts.append(unit(lat.tokens[i]))
+            parts.append(unit(lat.tokens[i])); where.append(lat.centers[i])
         held = [knn_distance(p, np.concatenate([q for j, q in enumerate(parts) if j != s]), k) for s, p in enumerate(parts)]
         allheld = np.concatenate(held)
         return cls(np.concatenate(parts), np.concatenate([np.full(len(p), s) for s, p in enumerate(parts)]),
                    float(allheld.max()), allheld, keys.pop(), lattice, k, min_occupancy, drop_boundary,
-                   {"normals": [f.path for f, _ in normals], "tokens_per_normal": [len(p) for p in parts],
-                    "license": sorted({f.license for f, _ in normals}), **(meta or {})})
+                   {"normals": [f.path for f, _ in normals], "sources": sources,
+                    "tokens_per_normal": [len(p) for p in parts],
+                    "license": sorted({f.license for f, _ in normals}), **(meta or {})}, np.concatenate(where))
+
+    def per_normal(self) -> list[dict]:
+        """How each normal's held-out tokens scored: the threshold is ONE token's distance, and one
+        normal can set it far above the others (a review found 0.657 from one where the other two
+        reached 0.195 and 0.051) - this is how to see that."""
+        out = []
+        for s_ in range(int(self.subject.max()) + 1):
+            d = self.held_out[self.subject == s_]
+            i = int(np.argmax(d))
+            row = {"normal": (self.meta.get("sources") or self.meta.get("normals") or [None] * (s_ + 1))[s_],
+                   "tokens": int(len(d)), "p50": float(np.median(d)), "p99": float(np.percentile(d, 99)), "max": float(d.max())}
+            if self.centers is not None:
+                row["max_at_lps"] = np.round(self.centers[self.subject == s_][i], 1).tolist()
+            out.append(row)
+        return out
 
     # -- the file: a zarr zip like a field's, so one reader stack serves both ------------------------
     FORMAT, FORMAT_VERSION = "feldglas-reference", "0.1"
@@ -556,8 +600,11 @@ class Reference:
         staging = pathlib.Path(tempfile.mkdtemp(prefix=path.name + ".staging-", dir=path.parent))
         try:
             root = zarr.create_group(store=LocalStore(str(staging)))
-            for name, a in (("tokens", self.tokens.astype(np.float32)), ("subject", self.subject.astype(np.int32)),
-                            ("held_out", self.held_out.astype(np.float32))):
+            arrays = [("tokens", self.tokens.astype(np.float32)), ("subject", self.subject.astype(np.int32)),
+                      ("held_out", self.held_out.astype(np.float32))]
+            if self.centers is not None:
+                arrays.append(("centers", np.asarray(self.centers, np.float64)))
+            for name, a in arrays:
                 arr = root.create_array(name, shape=a.shape, dtype=a.dtype, compressors=zarr.codecs.ZstdCodec(level=3))
                 arr[:] = a
             root.attrs.update({"duckn": {"version": "1.0", "intent": "embedding-reference", "extensions": {EXTENSION: {
@@ -579,21 +626,42 @@ class Reference:
         """A reference written by :meth:`save` - a path or an ``http(s)://`` URL."""
         import zarr
         from .fetch import local
-        p = str(local(path, token))
+        p = str(local(path, token, expect="zip"))
         root = zarr.open_group(store=zarr.storage.ZipStore(p, mode="r"), mode="r")
         e = ((root.attrs.asdict().get("duckn") or {}).get("extensions") or {}).get(EXTENSION) or {}
         if (e.get("format"), e.get("format_version"), e.get("version")) != (cls.FORMAT, cls.FORMAT_VERSION, EXTENSION_VERSION):
             raise ValueError(f"{path}: {e.get('format')!r} {e.get('format_version')!r}; this reader knows "
                              f"{cls.FORMAT} {cls.FORMAT_VERSION}")
-        k = e["key"]
-        return cls(root["tokens"][:], root["subject"][:], float(e["threshold"]), root["held_out"][:],
-                   (k["model"], k["weights"], k["layer"], k["stage"]), e.get("lattice"), int(e["k"]),
-                   float(e["min_occupancy"]), bool(e["drop_boundary"]), dict(e.get("meta") or {}))
+        bad = lambda why: ValueError(f"{path}: not a usable reference - {why}")
+        try:
+            k = e["key"]
+            key = (k["model"], k["weights"], k["layer"], k["stage"])
+            threshold, kk, occ, drop, lat = e["threshold"], e["k"], e["min_occupancy"], e["drop_boundary"], e.get("lattice")
+            tokens, subject, held = root["tokens"][:], root["subject"][:], root["held_out"][:]
+        except KeyError as x:
+            raise bad(f"it has no {x.args[0]!r}") from None
+        if not (isinstance(threshold, (int, float)) and np.isfinite(threshold) and 0 <= threshold <= 2):
+            raise bad(f"threshold {threshold!r} is not a distance in [0, 2]")
+        if not (isinstance(occ, (int, float)) and 0 < occ <= 1):
+            raise bad(f"min_occupancy {occ!r} is not in (0, 1]")
+        if not isinstance(drop, bool) or not (lat is None or isinstance(lat, int)):
+            raise bad("drop_boundary must be true or false, and lattice null or an integer")
+        if not (tokens.ndim == 2 and len(tokens) == len(subject) == len(held)):
+            raise bad(f"{len(tokens)} tokens, {len(subject)} subjects and {len(held)} held-out distances disagree")
+        if not (isinstance(kk, int) and 1 <= kk <= len(tokens)):
+            raise bad(f"k {kk!r} with {len(tokens)} tokens")
+        n = np.linalg.norm(tokens, axis=1)
+        if not (np.isfinite(tokens).all() and np.allclose(n, 1, atol=1e-3)):
+            raise bad("its tokens are not finite unit vectors")
+        centers = root["centers"][:] if "centers" in root else None
+        return cls(tokens, subject, float(threshold), held, key, lat, kk, float(occ), drop, dict(e.get("meta") or {}), centers)
 
     def score(self, f: FieldView, region: Mask, radius: float = 15.0) -> Scores:
         """Every token of ``region`` in ``f``, its distance from normal, and the flagged tokens
         grouped into sites (within ``radius`` mm), strongest first. A site is a place to look. An
         empty region is refused: no token scored is not "normal"."""
+        if self.lattice is not None and not -len(f.lattices) <= self.lattice < len(f.lattices):
+            raise ValueError(f"the reference is for lattice {self.lattice}; {f.path} has {len(f.lattices)}")
         lat = self._lattice(f, self.lattice)
         if lat.key() != self.key:
             raise ValueError(f"{f.path}: tokens of {lat.key()} cannot be scored against a reference of {self.key}")

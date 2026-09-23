@@ -56,7 +56,7 @@ class LabelMap:
         for s in structures:
             hit = [n for n in self.names if n.startswith(s[:-1])] if s.endswith("*") else ([s] if s in self.names else [])
             if not hit:
-                raise KeyError(f"no structure matches {s!r} ({len(self.names)} named; e.g. {', '.join(sorted(self.names)[:5])})")
+                raise KeyError(no_structure(s, self.names))
             for n in hit:
                 out |= self.layer(n) == self.names[n]
         return out
@@ -118,6 +118,15 @@ class GridLabels:
         return sorted(name for name, v in self.names.items() if n[v] >= min_voxels)
 
 
+def no_structure(name: str, names) -> str:
+    """The refusal for a name a label map does not have: the nearest names it DOES have."""
+    import difflib
+    low = {n.lower(): n for n in names}
+    near = [low[m] for m in difflib.get_close_matches(name.lower().rstrip("*"), list(low), n=4, cutoff=0.5)]
+    return (f"no structure matches {name!r} in this label map ({len(names)} named)"
+            + (f"; did you mean {', '.join(near)}?" if near else f"; e.g. {', '.join(sorted(names)[:5])}"))
+
+
 def read_seg_nrrd(path, names: dict[str, int] | None = None, token: str | None = None) -> LabelMap:
     """A segmentation in NRRD. Two styles are read: LABELMAP style - one 3-D volume, each voxel the
     label value of its segment, so segments cannot overlap (haversack writes this) - and LAYERED style
@@ -127,7 +136,7 @@ def read_seg_nrrd(path, names: dict[str, int] | None = None, token: str | None =
     sources of one fact. ``path`` may be an ``http(s)://`` URL - a haversack server's
     ``/v1/<source>/<id>/<task>/labels.seg.nrrd`` - fetched once and revalidated by ETag."""
     from .fetch import local                          # a path, or an http(s) URL (a haversack result path)
-    raw = local(path, token).read_bytes()
+    raw = local(path, token, expect="nrrd").read_bytes()
     cut = raw.find(b"\n\n")
     if not raw.startswith(b"NRRD") or cut < 0:
         raise ValueError(f"{path}: not an NRRD file")

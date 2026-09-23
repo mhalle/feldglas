@@ -176,7 +176,21 @@ Not built:
    `--haversack SERVER --series SOURCE:ID --task TASK` from a haversack result path. Real run: labels
    from the public twin for a colorectal-metastasis scan scored against the ldct liver reference -
    69 tokens flagged in 13 sites: another collection and a contrast phase, the guide's "suspect the
-   protocol first" in practice. RADAR's head findings (`Session.table()`) are not on the command yet.
+   protocol first" in practice. RADAR's head findings (`Session.table()`) are not on the command yet. Then four more adversarial
+   reviews (2026-09-23), an agent DRIVING the command among them. Fixed: a URL could send the token
+   over plain http to another host (Python's and obstore's parsers disagreed on `\`; $HTTP_PROXY got
+   it too) - one parse now decides host and token, local hosts bypass proxies; concurrent fetches
+   could pin the wrong version - a lock, private temp files, a sha256 checked before use; haversack's
+   202 "still computing" was cached as the labels - bodies must be the kind the caller expects; a
+   stale copy served after a REFUSAL - only after a network failure now; a scan scored with ANOTHER
+   scan's labels, silently - labels are checked against the field's recorded CT grid; references
+   used on other structures, duplicate normals, tampered files, negative erosion - refused;
+   tracebacks - one line, and one JSON object under --json. Added for agents: `warnings[]`, how a
+   reference's threshold was set (per normal, and where), `info` on references, each site's depth in
+   the organ (the review's real lesion was 35 mm deep, its false sites 19-22), typo suggestions,
+   `health` importing its dependencies. Erosion runs on the region's box: build 40 -> 11 s, score
+   13 -> 3.7 s. Mutation: 27 of 93 killed before; every survivor re-run killed after (one equivalent,
+   the two size-cap checks cover each other).
 6. duckn core: `linear` along an axis (per-channel slope and intercept). int8 fields work without it
    (decision 7); a core transform would let generic duckn readers decode them. A duckn change of its
    own - duckn has its own sessions.
