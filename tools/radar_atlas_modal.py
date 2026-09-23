@@ -3,8 +3,8 @@
 The cohort's fields are 20 GB on the object store and the laptop this was written on had 52 GB
 free, so nothing here brings a field home. Two CPU steps, no GPU:
 
-  ::main      per scan - fetch the field from the store (verified), sweep every organ of RADAR's
-              own mask with 64 and 32 mm boxes (and 16 mm for the small solid organs), pool each
+  ::main      per scan - fetch the field from the store (verified), sweep every organ of haversack's
+              `ts.v2:total` labels with 64 and 32 mm boxes (and 16 mm for the small solid organs), pool each
               box on the CPU head, and, where the series has an expert SEG in IDC, scatter its
               "Mass" segments onto the model grid as per-lesion occupancy. One ``regions/<series>.npz``
               per scan on the Modal volume ``feldglas-radar-work``: vectors (fp16), the box table,
@@ -27,11 +27,20 @@ Run:  FELDGLAS_STORE=s3://<bucket>/feldglas uv run --no-sync modal run tools/rad
       FELDGLAS_STORE=s3://<bucket>/feldglas uv run --no-sync modal run tools/radar_atlas_modal.py::main
       FELDGLAS_STORE=s3://<bucket>/feldglas uv run --no-sync modal run tools/radar_atlas_modal.py::analysis
 
+**The gate is haversack's, never the encoder's** (2026-09-22, the user's decision: a field carries no
+mask). Labels come BY PATH from the read-only twin of the study server (``$HAVERSACK_TWIN``, cache
+hits only, no credentials; ``ts.v2:total``, else ``ts.v2:total_fast``), are read with
+``feldglas.labels`` and pulled onto the field's model grid. An organ's gate is the union of the
+structures ``adapters.radar.TS_QUERY_RULES`` files under it - kidney = ``kidney_left``,
+``kidney_right`` and ``kidney_cyst_*`` - so every encoder is swept over the SAME organs from the SAME
+segmentation. EXPLORATION 5.11 measured that the gate's source barely matters; before this, each
+encoder was swept over its own mask. A series the twin has no labels for is an error, not a skip.
+
 The NULL model's fields (``tools/null_export_modal.py``) go through the same steps with
 ``FELDGLAS_ENCODER=null-totalsegmentator``: its own manifest, work volume (``feldglas-null-work``)
 and results (``normal_atlas_null.json``), the mean-per-lattice head, and no RADAR-finding
-detectors. The organ names are RADAR's either way - the null export maps TotalSegmentator's labels
-into RADAR's 36 organs - so boxes are drawn over the same organs by the same rules.
+detectors. The organ names are RADAR's either way, so boxes are drawn over the same organs by the
+same rules.
 """
 import csv, functools, io, json, os, pathlib, time
 
@@ -58,6 +67,8 @@ ENCODERS = {"radar": ("feldglas-radar-work", ""),
 if ENCODER not in ENCODERS:
     raise SystemExit(f"FELDGLAS_ENCODER={ENCODER!r}: one of {sorted(ENCODERS)}")
 SUFFIX = ENCODERS[ENCODER][1]
+TWIN = os.environ.get("HAVERSACK_TWIN", "https://<twin-host>")
+LABEL_TASKS = ("ts.v2:total", "ts.v2:total_fast")    # the first the twin has, in this order
 _SECRET = os.environ.get("FELDGLAS_MODAL_SECRET", "feldglas-r2")
 image = (modal.Image.debian_slim(python_version="3.12").apt_install("git")
          .pip_install("numpy>=1.24", "scipy", "obstore>=0.11", "idc-index", "highdicom>=0.23", "pydicom>=3",
@@ -82,7 +93,8 @@ MIN_ORGAN_ML, MAX_BOXES = 5.0, 9000
 
 @app.function(image=image, secrets=[modal.Secret.from_name(_SECRET)], volumes={"/work": work}, cpu=2,
               memory=8192, timeout=2400, max_containers=40)
-def regions(u: str, digest: str, pid: str, coll: str, phase: str, seg_series: str, force: bool = False) -> str:
+def regions(u: str, digest: str, pid: str, coll: str, phase: str, seg_series: str, force: bool = False,
+            twin: str = TWIN) -> str:
     import glob, tempfile
     import numpy as np
     from feldglas.adapters import radar
@@ -100,6 +112,7 @@ def regions(u: str, digest: str, pid: str, coll: str, phase: str, seg_series: st
             if not open_blobs(ENCODER, check=False).fetch(digest, p):
                 raise FileNotFoundError(f"blob {digest} is gone, or did not match its name")
             field = read_field(p)
+            organs, meta["labels_task"] = _organ_gates(field, u, d, twin)
             head = _head(field)
             prepared = head.prepare(field.all_tokens())
             voxel_ml = float(np.prod(field.grid.spacing)) * 1e-3
@@ -138,15 +151,12 @@ def regions(u: str, digest: str, pid: str, coll: str, phase: str, seg_series: st
             overlaps, base, skipped = [], 0, []
             target = TARGET.get(coll, (None,))[0]
             occ_table = na.integral(occ) if occ is not None else None
-            for val in np.unique(field.native_mask):
-                if val == 0:
-                    continue
-                name = radar.ORGANS[int(val) - 1]
-                organ = field.native_mask == val
+            for name, organ in organs.items():
+                val = radar.ORGANS.index(name) + 1          # RADAR's numbering, so the analysis reads it as before
                 if organ.sum() * voxel_ml < MIN_ORGAN_ML:
                     continue
-                if name == target:
-                    meta["tumor_in_radar_organ"] = float(occ[organ].sum() / max(occ.sum(), 1e-9))
+                if name == target and occ is not None:
+                    meta["tumor_in_organ_gate"] = float(occ[organ].sum() / max(occ.sum(), 1e-9))
                 for size in SIZES + ((16,) if name in SMALL else ()):
                     sw = na.sweep(field, organ, float(size))
                     if not len(sw.center) or len(sw.center) > MAX_BOXES:
@@ -171,7 +181,7 @@ def regions(u: str, digest: str, pid: str, coll: str, phase: str, seg_series: st
                         T["organ_ml"].append(sw.organ_ml[ok].astype(np.float32)); T["coords"].append(sw.coords[ok].astype(np.float32))
                         T["tumor_ml"].append(tum[ok].astype(np.float32)); T["vec"].append(X[ok].astype(np.float16))
             if not T["vec"]:
-                raise RuntimeError("no organ of RADAR's mask was large enough to sweep")
+                raise RuntimeError("no organ of haversack's labels was large enough to sweep")
             meta.update(boxes=base, skipped=skipped, seconds=round(time.time() - t0, 1),
                         lesions=int(len(lesions)), grid=list(field.grid.shape))
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -191,6 +201,34 @@ def regions(u: str, digest: str, pid: str, coll: str, phase: str, seg_series: st
 # zipfile, and every piece is a round trip on the Modal volume's network mount - ~5 MB/s. The null
 # model's region files (704-wide vectors, 5.8 GB for 475 scans) took 23 minutes to load that way
 # (py-spy: zipfile.read under np.load). One read_bytes per file is one round trip.
+
+
+def _organ_gates(field, u: str, d: str, twin: str):
+    """``({RADAR organ: mask on the model grid}, the task the labels came from)``: haversack's labels
+    for series ``u``, fetched by path from the read-only twin and pulled onto ``field``'s grid, each
+    organ the union of the structures ``TS_QUERY_RULES`` files under it. Structures RADAR has no
+    organ for (prostate, thyroid, ...) gate nothing."""
+    import urllib.error, urllib.request
+    from feldglas.adapters import radar
+    from feldglas.labels import read_seg_nrrd
+    misses = []
+    for task in LABEL_TASKS:
+        try:
+            with urllib.request.urlopen(f"{twin}/v1/idc/{u}/{task}/labels.seg.nrrd", timeout=180) as r:
+                (pathlib.Path(d) / "labels.seg.nrrd").write_bytes(r.read())
+            break
+        except urllib.error.HTTPError as e:
+            misses.append(f"{task}: {e.code}")
+    else:
+        raise RuntimeError(f"the twin has no haversack labels for this series ({'; '.join(misses)})")
+    gl = read_seg_nrrd(pathlib.Path(d) / "labels.seg.nrrd").on_grid(field.grid)
+    by_organ: dict[str, list[str]] = {}
+    for name in gl.present():
+        try:
+            by_organ.setdefault(radar.query_for(name), []).append(name)
+        except KeyError:
+            pass
+    return {organ: gl.mask(*names) for organ, names in sorted(by_organ.items())}, task
 
 
 @functools.lru_cache(maxsize=1)
@@ -325,10 +363,11 @@ def analyze(seed: int = 0) -> str:
         if not pts:
             continue
         val = radar.ORGANS.index(organ_name) + 1
-        cov = [s["meta"].get("tumor_in_radar_organ") for s in pts if s["meta"].get("tumor_in_radar_organ") is not None]
+        cov = [s["meta"].get("tumor_in_organ_gate") for s in pts if s["meta"].get("tumor_in_organ_gate") is not None]
         onm = [s["meta"]["tumor_ml_on_model_grid"] / max(s["meta"]["tumor_ml"], 1e-9) for s in pts if "tumor_ml" in s["meta"]]
         out["coverage"][coll] = {"scans": len(pts),
-                                 "tumor_volume_inside_radars_own_organ_mask_q10_q50_q90": [round(float(q), 3) for q in np.quantile(cov, [0.1, 0.5, 0.9])] if cov else None,
+                                 "tumor_volume_inside_the_organ_gate_q10_q50_q90": [round(float(q), 3) for q in np.quantile(cov, [0.1, 0.5, 0.9])] if cov else None,
+                                 "organ_gate": "haversack ts.v2:total (else total_fast), by TS_QUERY_RULES",
                                  "tumor_volume_kept_by_the_scatter_q10_q50": [round(float(q), 3) for q in np.quantile(onm, [0.1, 0.5])] if onm else None}
         C = out["cohorts"][coll] = {"organ": organ_name, "finding": fname, "sizes": {}}
         for size in (64, 32, 16):
@@ -519,7 +558,7 @@ def main(collection: str = "", limit: int = 0, force: bool = False):
     jobs = _jobs(collection, limit)
     print(f"{len(jobs)} scans: " + ", ".join(f"{c} {sum(j[3] == c for j in jobs)}" for c in sorted({j[3] for j in jobs})))
     t = time.time(); n = {"ok": 0, "cached": 0, "err": 0}
-    for j, r in zip(jobs, regions.starmap([(*j, force) for j in jobs], return_exceptions=True)):
+    for j, r in zip(jobs, regions.starmap([(*j, force, TWIN) for j in jobs], return_exceptions=True)):
         r = json.loads(r) if isinstance(r, str) else {"err": repr(r)[:300]}
         if r.get("err"):
             n["err"] += 1; print(f"  {j[0]} {j[3]}: {r['err']}\n{r.get('trace', '')}")
@@ -528,7 +567,8 @@ def main(collection: str = "", limit: int = 0, force: bool = False):
         else:
             n["ok"] += 1
             print(f"  {j[0]} {j[3]:28} {r['boxes']:6} boxes {r['lesions']:3} lesions {r['seconds']:6.1f} s"
-                  + (f"  tumor in RADAR's {TARGET[j[3]][0]} {r.get('tumor_in_radar_organ', float('nan')):.2f}" if j[3] in TARGET else "")
+                  + (f"  tumor in the {TARGET[j[3]][0]} gate {r.get('tumor_in_organ_gate', float('nan')):.2f}" if j[3] in TARGET else "")
+                  + (f"  [{r.get('labels_task')}]" if r.get('labels_task') != LABEL_TASKS[0] else "")
                   + (f"  skipped {r['skipped']}" if r.get("skipped") else ""))
     print(f"{n} in {time.time() - t:.0f} s")
 
