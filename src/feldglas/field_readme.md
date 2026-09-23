@@ -32,7 +32,11 @@ directly, zstd included:
   ES module (`"type": "module"`).
 Or read the JSON and chunks from the zip yourself: entries are stored, so each is a byte range.
 In Python, `feldglas.client` implements this guide (`open_field`, masks on any grid, organ vectors,
-`Reference` for normal tissue); a TypeScript client is planned.
+`Reference` for normal tissue), and the `feldglas` command wraps it (`feldglas info | vectors |
+reference build | score`; `pip install feldglas[client]`); a TypeScript client is planned. Both take
+a path or an `http(s)://` URL for every file - a haversack server's result path included:
+`<server>/v1/<source>/<id>/<task>/labels.seg.nrrd`, on its public twin or a local `haversack serve`.
+Such a file's ETag is its content digest: fetch it once, then revalidate with `If-None-Match`.
 
 - The root `zarr.json`'s attributes hold `duckn` metadata. Its `extensions.embedding`:
   - `group`: `id` (the field's) and `members`, the lattice arrays' names, in order. Each lattice's

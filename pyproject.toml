@@ -25,7 +25,14 @@ remote = ["provender>=0.1.1"]
 # attributes (never hand-written dicts). Imported inside functions only - a viewer reading npz
 # fields needs neither.
 store = ["zarr>=3.3", "duckn"]
-test = ["pytest>=8", "scipy>=1.11", "scikit-learn>=1.4", "provender>=0.1.1", "zarr>=3.3", "duckn"]
+# the receiving end (feldglas.client, the `feldglas` command): zarr reads a field, obstore fetches
+# fields and .seg.nrrd files by http(s) URL (a haversack server's path surface, a local `haversack
+# serve`), click is the command line, scipy erodes a region
+client = ["zarr>=3.3", "obstore>=0.11", "click>=8.1", "scipy>=1.11"]
+test = ["pytest>=8", "scipy>=1.11", "scikit-learn>=1.4", "provender>=0.1.1", "zarr>=3.3", "duckn", "obstore>=0.11", "click>=8.1"]
+
+[project.scripts]
+feldglas = "feldglas.cli:main"
 
 [tool.uv.sources]
 rankfield = { git = "https://github.com/mhalle/rankfield.git", tag = "v0.3.2" }

@@ -170,13 +170,20 @@ Not built:
    write 0.1 `.npz`); the 1,680 fields on R2 are 0.1 and stay readable.
 4. The head as a packaged, digest-checked artifact with a fetch step (today: hand-placed files in
    `~/.cache/feldglas/radar/`; RADAR's encoder imported from a local upstream clone).
-5. A client command: `feldglas describe FIELD --labels labels.seg.nrrd -o radar.json` through
-   `Session.table()`.
+5. ~~A client command~~ - BUILT 2026-09-23 as the `feldglas` command (click; `feldglas[client]`):
+   `info`, `vectors`, `reference build`, `score`, every file a path or an http(s) URL (obstore; ETag
+   revalidation; a token only to its own origin, never over plain http elsewhere). Labels come by
+   `--haversack SERVER --series SOURCE:ID --task TASK` from a haversack result path. Real run: labels
+   from the public twin for a colorectal-metastasis scan scored against the ldct liver reference -
+   69 tokens flagged in 13 sites: another collection and a contrast phase, the guide's "suspect the
+   protocol first" in practice. RADAR's head findings (`Session.table()`) are not on the command yet.
 6. duckn core: `linear` along an axis (per-channel slope and intercept). int8 fields work without it
    (decision 7); a core transform would let generic duckn readers decode them. A duckn change of its
    own - duckn has its own sessions.
-7. Delivery through haversack: a `radar` deliverable (a file in the result's generation, not part
-   of its key) returning the field beside the labels. Needs feldglas published (it has no remote).
+7. Delivery through haversack: the field by URL beside the labels, so a client needs nothing but
+   URLs and a reference - `<server>/v1/<source>/<id>/radar/field.zarr.zip` on the same path surface,
+   the encoder in the task's place (haversack has no encoder task today). The client side is ready
+   (fields open from URLs, 2026-09-23). Needs feldglas published (it has no remote).
 8. Derived products, later: multiscale lesion-probability maps as seg-extension fractional label
    maps per lattice with `thickness`, `role: "unknown"` outside the gate (designed in the
    capabilities session, 14:45); deviation maps against a donor atlas (5.6: plain distance in the

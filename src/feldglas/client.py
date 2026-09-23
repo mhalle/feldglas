@@ -170,13 +170,14 @@ def _model_grid(lat: Lattice):
     return rows, lat.origin - ((k - 1) / 2.0) @ rows
 
 
-def open_field(path) -> FieldView:
-    """A ``<series>.zarr.zip`` field, every lattice decoded - after the checks the store's own reader
+def open_field(path, token: str | None = None) -> FieldView:
+    """A ``<series>.zarr.zip`` field - a path, or an ``http(s)://`` URL - every lattice decoded - after the checks the store's own reader
     makes: one group, in order; extents inside their lattices and agreeing with the data box; every
     lattice placing the same model grid; finite, non-singular geometry; no integer read as tokens.
     Refuses a format, version or value transform it does not know, rather than guess at it."""
     import zarr
-    path = str(pathlib.Path(path).expanduser())
+    from .fetch import local
+    path = str(local(path, token))                            # an http(s) URL is fetched into the cache
     if not pathlib.Path(path).is_file():
         raise FileNotFoundError(f"{path}: no such field")
     root = zarr.open_group(store=zarr.storage.ZipStore(path, mode="r"), mode="r")
@@ -295,10 +296,10 @@ def structure_mask(labels: LabelMap, *structures: str, optional=()) -> Mask:
     return Mask(labels.mask(*names), np.asarray(labels.affine_lps, float))
 
 
-def seg_mask(path, *structures: str, optional=(), names=None) -> Mask:
+def seg_mask(path, *structures: str, optional=(), names=None, token: str | None = None) -> Mask:
     """``structure_mask(read_seg_nrrd(path, names), *structures, optional=...)``: a region straight
     from a ``.seg.nrrd`` (``names`` only for a plain labelmap with no segment table)."""
-    return structure_mask(read_seg_nrrd(path, names), *structures, optional=optional)
+    return structure_mask(read_seg_nrrd(path, names, token=token), *structures, optional=optional)
 
 
 def _layers_at(lattice: Lattice, labels: LabelMap) -> np.ndarray:
@@ -513,7 +514,7 @@ class Reference:
 
     @classmethod
     def build(cls, normals, lattice: int | None = None, k: int = 5, min_occupancy: float = 0.5,
-              drop_boundary: bool = True) -> "Reference":
+              drop_boundary: bool = True, meta: dict | None = None) -> "Reference":
         """``normals``: ``(FieldView, Mask)`` pairs - each normal scan and its normal-tissue region
         (an organ from a segmentation, eroded to keep tokens interior, or a drawn ROI)."""
         normals = list(normals)
@@ -533,7 +534,61 @@ class Reference:
         allheld = np.concatenate(held)
         return cls(np.concatenate(parts), np.concatenate([np.full(len(p), s) for s, p in enumerate(parts)]),
                    float(allheld.max()), allheld, keys.pop(), lattice, k, min_occupancy, drop_boundary,
-                   {"normals": [f.path for f, _ in normals], "tokens_per_normal": [len(p) for p in parts]})
+                   {"normals": [f.path for f, _ in normals], "tokens_per_normal": [len(p) for p in parts],
+                    "license": sorted({f.license for f, _ in normals}), **(meta or {})})
+
+    # -- the file: a zarr zip like a field's, so one reader stack serves both ------------------------
+    FORMAT, FORMAT_VERSION = "feldglas-reference", "0.1"
+
+    def save(self, path) -> pathlib.Path:
+        """``<name>.zarr.zip``: the reference tokens (float32), which normal each came from, every
+        held-out distance, and - on the root's ``embedding`` extension - the comparability key, the
+        threshold and how it was set, and ``meta`` (the normals, their regions, anything the builder
+        noted, e.g. the protocol). A reference derives from the normals' fields and inherits their
+        license; ``meta["license"]`` says it."""
+        import os, shutil, tempfile, zipfile
+        import zarr
+        from zarr.storage import LocalStore
+        path = pathlib.Path(path)
+        if not str(path).endswith(".zarr.zip"):
+            raise ValueError(f"{path}: a reference is written as <name>.zarr.zip")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        staging = pathlib.Path(tempfile.mkdtemp(prefix=path.name + ".staging-", dir=path.parent))
+        try:
+            root = zarr.create_group(store=LocalStore(str(staging)))
+            for name, a in (("tokens", self.tokens.astype(np.float32)), ("subject", self.subject.astype(np.int32)),
+                            ("held_out", self.held_out.astype(np.float32))):
+                arr = root.create_array(name, shape=a.shape, dtype=a.dtype, compressors=zarr.codecs.ZstdCodec(level=3))
+                arr[:] = a
+            root.attrs.update({"duckn": {"version": "1.0", "intent": "embedding-reference", "extensions": {EXTENSION: {
+                "version": EXTENSION_VERSION, "format": self.FORMAT, "format_version": self.FORMAT_VERSION,
+                "key": dict(zip(("model", "weights", "layer", "stage"), self.key)), "threshold": self.threshold,
+                "k": self.k, "min_occupancy": self.min_occupancy, "drop_boundary": self.drop_boundary,
+                "lattice": self.lattice, "meta": self.meta}}}})
+            partial = path.with_name(path.name + ".partial")
+            with zipfile.ZipFile(partial, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as zf:
+                for fp in sorted(q for q in staging.rglob("*") if q.is_file()):
+                    zf.write(fp, fp.relative_to(staging).as_posix())
+            os.replace(partial, path)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+        return path
+
+    @classmethod
+    def load(cls, path, token: str | None = None) -> "Reference":
+        """A reference written by :meth:`save` - a path or an ``http(s)://`` URL."""
+        import zarr
+        from .fetch import local
+        p = str(local(path, token))
+        root = zarr.open_group(store=zarr.storage.ZipStore(p, mode="r"), mode="r")
+        e = ((root.attrs.asdict().get("duckn") or {}).get("extensions") or {}).get(EXTENSION) or {}
+        if (e.get("format"), e.get("format_version"), e.get("version")) != (cls.FORMAT, cls.FORMAT_VERSION, EXTENSION_VERSION):
+            raise ValueError(f"{path}: {e.get('format')!r} {e.get('format_version')!r}; this reader knows "
+                             f"{cls.FORMAT} {cls.FORMAT_VERSION}")
+        k = e["key"]
+        return cls(root["tokens"][:], root["subject"][:], float(e["threshold"]), root["held_out"][:],
+                   (k["model"], k["weights"], k["layer"], k["stage"]), e.get("lattice"), int(e["k"]),
+                   float(e["min_occupancy"]), bool(e["drop_boundary"]), dict(e.get("meta") or {}))
 
     def score(self, f: FieldView, region: Mask, radius: float = 15.0) -> Scores:
         """Every token of ``region`` in ``f``, its distance from normal, and the flagged tokens

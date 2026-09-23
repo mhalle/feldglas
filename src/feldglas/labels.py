@@ -118,14 +118,16 @@ class GridLabels:
         return sorted(name for name, v in self.names.items() if n[v] >= min_voxels)
 
 
-def read_seg_nrrd(path, names: dict[str, int] | None = None) -> LabelMap:
+def read_seg_nrrd(path, names: dict[str, int] | None = None, token: str | None = None) -> LabelMap:
     """A segmentation in NRRD. Two styles are read: LABELMAP style - one 3-D volume, each voxel the
     label value of its segment, so segments cannot overlap (haversack writes this) - and LAYERED style
     (3D Slicer, when segments overlap). Names come from the file's segment table; a plain labelmap
     ``.nrrd`` that has none (its names live in a separate color table) takes them from ``names``,
     ``{name: label value}``. A file that has a table and is also given ``names`` is refused: two
-    sources of one fact."""
-    raw = pathlib.Path(path).read_bytes()
+    sources of one fact. ``path`` may be an ``http(s)://`` URL - a haversack server's
+    ``/v1/<source>/<id>/<task>/labels.seg.nrrd`` - fetched once and revalidated by ETag."""
+    from .fetch import local                          # a path, or an http(s) URL (a haversack result path)
+    raw = local(path, token).read_bytes()
     cut = raw.find(b"\n\n")
     if not raw.startswith(b"NRRD") or cut < 0:
         raise ValueError(f"{path}: not an NRRD file")
