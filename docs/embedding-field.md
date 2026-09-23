@@ -182,7 +182,11 @@ Not built:
    capabilities session, 14:45); deviation maps against a donor atlas (5.6: plain distance in the
    liver); score maps restored to the CT grid through rankfield's `regions`.
 9. **A client library, one API in two languages** (proposed 2026-09-23, after the TypeScript client
-   test below). Python `feldglas.client` on numpy + zarr alone: open (decoded tokens, centers,
+   test below; the Python half STARTED the same day - `src/feldglas/client.py`: `open_field`, `Mask`
+   on any grid, `occupancy` / `tokens_in` (center, touch, occupancy rules), `organ_vectors`, and
+   `Reference.build` / `.score` for focal sites. It reproduces the painted-lesion demo from CT-grid
+   masks: threshold 0.205, every lesion found, the same two false sites, 0.3 s a scan. Still to do:
+   depth strata and the diffuse score, the reference file, the fixtures, the TypeScript half). Python `feldglas.client` on numpy + zarr alone: open (decoded tokens, centers,
    extent, provenance, the input grid), tokens under a mask (center or touch rule), organ vectors,
    and `Reference.build(normals, regions, strata)` / `.score(field, region)` giving focal sites
    (tokens against their nearest normal tokens) and a diffuse score per depth stratum (surface

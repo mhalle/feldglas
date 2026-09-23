@@ -28,6 +28,8 @@ directly, zstd included:
   (`ZipFileStore.fromBlob(blob)`; zarrita decodes zstd itself). Top-level `await` in Node needs an
   ES module (`"type": "module"`).
 Or read the JSON and chunks from the zip yourself: entries are stored, so each is a byte range.
+In Python, `feldglas.client` implements this guide (`open_field`, masks on any grid, organ vectors,
+`Reference` for normal tissue); a TypeScript client is planned.
 
 - The root `zarr.json`'s attributes hold `duckn` metadata. Its `extensions.embedding`:
   - `group.members`: the lattice arrays, in order.
@@ -128,6 +130,26 @@ And in core duckn, per space axis:
 
 ## Using a mask
 
+**A region may be several segments: union them.** A segmentation often labels a lesion as its
+own segment rather than as part of the organ - TotalSegmentator's `kidney_cyst_left` beside
+`kidney_left`; the tumor classes of liver and kidney tumor models. A token outside your region is
+never scored, so testing the organ label alone misses such a lesion silently. The region you test
+is the union of the organ and its lesion segments (`feldglas.client.structure_mask(labels,
+"kidney_left", "kidney_cyst_left")`); a normal-tissue reference, the other way round, takes the
+organ alone.
+
+Two more ways a lesion falls outside the region, and what to do about each:
+- **A hole in the organ label.** An organ model may carve out tissue that does not look like organ
+  (RADAR's own kidney mask held a median 0.79 of the expert-segmented tumor volume, and under half
+  in 33 of 148 kidney-tumor scans). Fill the region's holes before testing: a lesion the organ
+  surrounds but excludes is a hole in it.
+- **A lesion past the contour.** One that bulges out of the organ lies partly outside every organ
+  label. Grow the test region by a few mm, up to about one fine-token step (RADAR: 8-10 mm).
+
+And an ERODED test region (as in "Is a region unlike normal tissue?" below) cannot see anything
+within the erosion of the surface: test the whole unioned organ as well, reading its surface
+tokens with care - they see the neighbors, and normal surfaces vary more between people.
+
 1. For each in-extent token, find the label at its center (sample your label map at that world
    point), or the fraction of its box inside the structure.
 2. Keep tokens whose center (or most of whose box) is in the structure.
@@ -173,8 +195,8 @@ first.
    vessels, fissures), and their average is none of them.
 4. Set the threshold with the normals themselves: score each normal's tokens against the OTHER
    normals, and take the largest distance any held-out normal token reached.
-5. In the scan you test, score the same region's tokens; tokens beyond the threshold are flagged.
-   Group flagged tokens within ~15 mm into sites and report each site's place.
+5. In the scan you test, score the region's tokens - the organ unioned with its lesion segments
+   (see "Using a mask"), eroded as the reference was; tokens beyond the threshold are flagged. Group flagged tokens within ~15 mm into sites and report each site's place.
 
 On a public full-dose CT with spheres painted deep in the liver (the scan's own texture kept,
 three normals of the same study as reference), every painted lesion was flagged, down to 10 mm
