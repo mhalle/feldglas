@@ -130,6 +130,59 @@ ride in the `embedding` extension or the group's attributes, and move when it la
   prefilter is a distribution shift of about a patient step), the crop, window or whole-volume mode.
 - `attribution`: the license and citation.
 
+## Encoding moves into haversack (decided 2026-09-23)
+
+*The user's reason: weights management in ONE program.* Settled the same day:
+
+- **The split.** haversack owns encoding: the encoders, their weights (fetch, list, remove,
+  coverage), inputs, jobs, caching and serving - `haversack encode` beside `haversack segment`.
+  feldglas owns the field FORMAT (it writes and reads fields) and the receiving end: the client,
+  references, scoring, the `feldglas` command, the guide every field carries. haversack depends on
+  feldglas for the writer only; feldglas never imports haversack (today its null adapter does - that
+  cycle goes). One author per thing: feldglas the format, haversack the encoders. No torch in feldglas.
+- **Names: haversack's task grammar, `family[.version]:name[@revision]`,** adopted now, while the
+  names in fields and references are few. `radar:generalist@<hf-commit>` (RADAR's released
+  checkpoint; the name follows its Hugging Face repository, `radar-generalist/RADAR` - makers' names
+  are not renamed); `ts.v2:total_fast` is the encoder of that network (stages 2-4), `ts.v2:total`
+  the 1.5 mm variant. `segment X` and `encode X` name the same network; the verb decides labels or
+  tokens. `haversack encoders` lists what can be encoded, apart from `haversack tasks`. Old names
+  resolve through an alias table (`radar`, `null-totalsegmentator`, `null-totalsegmentator-1.5mm`),
+  as haversack keeps legacy bare task names resolving; the name is part of every field's and every
+  reference's comparability key.
+- **Modularity: one generic pipeline, one small module per algorithm** (`haversack.encoders`). The
+  pipeline does what every encoder shares - fetch and record the input, reorient and resample to the
+  encoder's declared convention, crop, pad, the data box, placement, provenance (the input CT's grid,
+  license, version), writing through feldglas. An algorithm supplies a SPEC (name, pinned weights and
+  digest, license and citation, input conventions, lattices: layers, kernels, widths; measured reach
+  and look offset when known), `load(weights, device, dtype)` and `encode(model, tensor)`. haversack's
+  engine rule carries over: a new need is a new spec FIELD, not a branch. An encoder completeness test
+  (pinned weights, attribution, a random-weights run that writes a valid field, a placement check),
+  after `test_engine_completeness`. The null model's tiling and stage extraction are generic over
+  nnU-Net networks: one "nnU-Net encoder" module makes every nnU-Net catalog haversack has (ts.v2,
+  ts.v3, moose, cads, mrsegmentator) encodable by a registry row naming its stages.
+- **Interface.** `haversack encode INPUT --encoder radar:generalist -o scan.zarr.zip [--int8]
+  [--device] [--dtype]` (INPUT: any haversack input - a file, DICOM, `idc:`/`tcia:`); `haversack
+  encoders`; `haversack weights fetch radar:generalist`; `haversack remote encode`. Server: `POST
+  /v1/jobs` with `kind=encode`; `GET|HEAD /v1/<source>/<id>/<encoder>/field.zarr.zip` (ETag the
+  content digest); `GET /v1/encoders`. `feldglas score --haversack ... --series ...` then takes the
+  field and the labels from one server.
+- **Phases.** 1: local `haversack encode` - the RADAR and nnU-Net encoders, the Hugging Face weights
+  fetch, `weights list/remove/coverage` generalized beyond TotalSegmentator, `encode` and
+  `encoders`, attribution (CC BY-NC-SA for RADAR's weights), the completeness test. No server change.
+  2: the encode job on the server - an output KIND through the result cache, jobs, routes,
+  `/v1/jobs/{id}/result` and the Modal publish (every one of them assumes `labels.seg.nrrd` today),
+  a GPU worker, `/v1/encoders`, `remote encode`. Labels stay the default kind; result keys do not
+  move. Not a DELIVERABLE of a segmentation: those are light renders from the input and labels in
+  memory, and a field needs a GPU, 1.5 GB of weights and the input - gone on a cache hit.
+- **The head.** RADAR's attention head and finding-text table are cut from the same checkpoint;
+  `haversack weights fetch radar:generalist` produces them too, and feldglas (whose numpy head
+  applies them, client-side) reads them from where haversack puts them.
+- **Migration.** feldglas's encode halves (`adapters/radar.py`, `adapters/null.py` encode parts,
+  `tools/*_encode_local.py`, the preprocessing borrowed from `tools/radar_export_modal.py`) move to
+  haversack; the study tools call haversack until phase 2 makes the Modal exporters haversack jobs.
+- **Prerequisite:** feldglas on GitHub with a tag, so haversack can pin it (its CI and Modal images
+  install siblings from pinned Git URLs). Development may start against an editable install.
+
 ## What is built, and what is not
 
 Built (feldglas main, 2026-09-22):
