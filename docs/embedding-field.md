@@ -196,6 +196,22 @@ ride in the `embedding` extension or the group's attributes, and move when it la
   rankfield v0.3.2 while haversack pins v0.3.3, and uv refuses the two git URLs**, so haversack's
   `encode` extra needs feldglas 0.1.1 with rankfield at v0.3.3 (v0.3.2's code). Keep the sibling
   pins equal on every tag bump.
+- **Phase 2, the local server (2026-09-23, LANDED on haversack main as `c177d9a` + review round
+  `c936d81`, not pushed; phase 1 is `d2e75d0`).** `POST /v1/jobs` with `kind=encode`: the name
+  resolves as an ENCODER (never through the task catalog), one image, option `int8` only, no
+  deliverables. A field is a second primary output through the SAME cache and lifetimes
+  (`field.zarr.zip` beside `labels.seg.nrrd`, one per generation); `result_key` adds `kind` only
+  for fields, so no segmentation key moved, and publication re-keys through the encoder's
+  versions (its revision + weights digests + `encode@epoch`; an nnU-Net encoder's task weights
+  only). `GET /v1/encoders`, `RemoteClient.encode`, `haversack remote encode|encoders`. Served
+  fields are token-identical to `haversack encode` on sample2 (both families), and a repeat is a
+  cache hit. Weights are NOT fetched on first use (1.6 GB under a license: an explicit `weights
+  fetch`). Not yet: a Modal encoder worker (Modal answers 501), a field path surface
+  (`/v1/<source>/<id>/<encoder>/field.zarr.zip`), `feldglas score --haversack`. Three adversarial reviewers
+  (keys/cache, HTTP, lifecycle) found no shared key and no field served as labels; they found a
+  stored job status that forgot `kind` (label links for an evicted field), a listing that kept
+  fields out only through a fail-open key check, and a field of a DICOM tree recording its decoded
+  copy's digest - all fixed and pinned.
 
 ## What is built, and what is not
 
