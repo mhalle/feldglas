@@ -10,7 +10,7 @@ under three gates, everything else held fixed (field, head, kidney query, 32 mm 
   hv+     the same plus `kidney_cyst_*` - TotalSegmentator splits cysts out of the kidney
 
 Labels come BY PATH from the read-only twin of the redeployed study server
-(`https://<twin-host>`: cache hits only, no credentials, ~1 s a
+(``$HAVERSACK_TWIN``: cache hits only, no credentials, ~1 s a
 series), are read with `feldglas.labels` and pulled onto the model grid. The healthy donors are
 swept under each gate too, so each gate is judged against an atlas built the same way.
 
@@ -23,7 +23,7 @@ import modal
 HERE = pathlib.Path(__file__).resolve().parent
 MEDSEG = HERE.parents[1] / "medseg" / "docs" / "radar-idc-validation" if len(HERE.parents) > 1 else HERE
 _SECRET = os.environ.get("FELDGLAS_MODAL_SECRET", "feldglas-r2")
-TWIN = os.environ.get("HAVERSACK_TWIN", "https://<twin-host>")
+TWIN = os.environ.get("HAVERSACK_TWIN", "")          # the haversack server holding the labels (its read-only twin will do)
 # the SAME image definition as radar_atlas_modal.py, so Modal reuses the one it built
 image = (modal.Image.debian_slim(python_version="3.12").apt_install("git")
          .pip_install("numpy>=1.24", "scipy", "obstore>=0.11", "idc-index", "highdicom>=0.23", "pydicom>=3",
@@ -41,6 +41,8 @@ FINDING = "Kidney_Renal cell carcinoma"
 @app.function(image=image, secrets=[modal.Secret.from_name(_SECRET)], volumes={"/work": work}, cpu=2, memory=8192,
               timeout=2400, max_containers=40)
 def sweep_one(u: str, digest: str, pid: str, coll: str, phase: str, seg_series: str, twin: str, force: bool = False) -> str:
+    if not twin:
+        raise RuntimeError("set $HAVERSACK_TWIN: the haversack server whose cached labels gate these fields")
     import glob, tempfile, urllib.error, urllib.request
     import numpy as np
     from feldglas.adapters import radar

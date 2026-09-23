@@ -71,7 +71,7 @@ ENCODERS = {"radar": ("radar", "feldglas-radar-work", "", "head"),
 if ENCODER not in ENCODERS:
     raise SystemExit(f"FELDGLAS_ENCODER={ENCODER!r}: one of {sorted(ENCODERS)}")
 FIELDS, _VOLUME, SUFFIX, POOL = ENCODERS[ENCODER]
-TWIN = os.environ.get("HAVERSACK_TWIN", "https://<twin-host>")
+TWIN = os.environ.get("HAVERSACK_TWIN", "")          # the haversack server holding the labels (its read-only twin will do)
 LABEL_TASKS = ("ts.v2:total", "ts.v2:total_fast")    # the first the twin has, in this order
 _SECRET = os.environ.get("FELDGLAS_MODAL_SECRET", "feldglas-r2")
 image = (modal.Image.debian_slim(python_version="3.12").apt_install("git")
@@ -212,6 +212,8 @@ def _organ_gates(field, u: str, d: str, twin: str):
     for series ``u``, fetched by path from the read-only twin and pulled onto ``field``'s grid, each
     organ the union of the structures ``TS_QUERY_RULES`` files under it. Structures RADAR has no
     organ for (prostate, thyroid, ...) gate nothing."""
+    if not twin:
+        raise RuntimeError("set $HAVERSACK_TWIN: the haversack server whose cached labels gate these fields")
     import urllib.error, urllib.request
     from feldglas.adapters import radar
     from feldglas.labels import read_seg_nrrd
