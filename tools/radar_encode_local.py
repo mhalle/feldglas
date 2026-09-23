@@ -153,7 +153,7 @@ def main():
 
     ct0 = nib.load(a.ct)                                # the grid AS DELIVERED goes in the field's provenance
     ct = ct0.as_reoriented(ornt_transform(io_orientation(ct0.affine), axcodes2ornt(("L", "A", "S"))))
-    arr = torch.as_tensor(np.asarray(ct.dataobj, np.float32)); aff = np.asarray(ct.affine, float)
+    arr = torch.as_tensor(np.ascontiguousarray(ct.dataobj, np.float32)); aff = np.asarray(ct.affine, float)
     t0 = time.time()
     base, (lo, hi), tgt = Export._prep(None, arr, aff)   # on the CPU: one interpolate, and the same bits on every machine
     if base is None:

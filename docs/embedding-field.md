@@ -150,6 +150,14 @@ Built (feldglas main, 2026-09-22):
   the store's by a test; on sample `159dff32` its scores agree with `gate.select(rule="any")` to ~0.04.
   0.8 s a scan on the M2. The head needs `findings_en.npz` (the text table with upstream's English
   names) beside `head.npz` - part of Not built 4.
+- **A deviation from normal needs no head** (EXPLORATION 5.14, 2026-09-22). RADAR's fields pooled by
+  the mean per lattice (`radar_atlas_modal.py` as `radar-mean`) detect tumor as well as or better
+  than through the head (32 mm AUC 0.971 / 0.905 / 0.931 against 0.920 / 0.850 / 0.835). With only a
+  few normals, test TOKENS, not boxes: `tools/roi_atlas_demo.py` - fine tokens against their 5
+  nearest normal tokens, thresholded at the largest held-out normal - flagged every painted liver
+  lesion from 10 mm / -40 HU, with two false sites; 32 mm boxes flagged none. The technique is in
+  the client guide ("Is a region unlike normal tissue?"). A shipped per-organ normal (a few donors'
+  tokens or mean vectors, per protocol) would let a client do this with the field alone - not built.
 - Mixed-width lattices and `LatticeMeanHead` (`d5d8d09`); the atlas gates by haversack labels
   (`1e91eb2`); boxes centered correctly (`d4eaba1`).
 

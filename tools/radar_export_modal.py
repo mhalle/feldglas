@@ -203,7 +203,7 @@ class Export:
             vol.reload()
             ct = nib.load(f"/vol/ct/{u}.nii.gz")
             ct = ct.as_reoriented(ornt_transform(io_orientation(ct.affine), axcodes2ornt(("L", "A", "S"))))
-            arr = torch.as_tensor(np.asarray(ct.dataobj, np.float32)).cuda()
+            arr = torch.as_tensor(np.ascontiguousarray(ct.dataobj, np.float32)).cuda()
             aff = np.asarray(ct.affine, float)
             sp = np.abs(np.diag(aff)[:3]); h, w, dd = arr.shape
             base, crop, tgt = self._prep(arr, aff)
@@ -270,7 +270,7 @@ class Export:
             vol.reload()
             ct0 = nib.load(f"/vol/ct/{u}.nii.gz")                # the grid AS DELIVERED goes in the provenance
             ct = ct0.as_reoriented(ornt_transform(io_orientation(ct0.affine), axcodes2ornt(("L", "A", "S"))))
-            arr = torch.as_tensor(np.asarray(ct.dataobj, np.float32)).cuda()
+            arr = torch.as_tensor(np.ascontiguousarray(ct.dataobj, np.float32)).cuda()
             aff = np.asarray(ct.affine, float)
             h, w, dd = arr.shape
             base, (lo, hi), tgt = self._prep(arr, aff)
