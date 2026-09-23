@@ -16,14 +16,19 @@ any mask on any grid (a segmentation of the CT, a drawn region).
 
 ## Reading it
 
+`duckn` is a metadata convention for n-dimensional arrays (NRRD's geometry, in JSON): each array's
+attributes carry a `duckn` object saying where its samples are in the world. Nothing here needs a
+duckn library; the fields used are explained below.
+
 A **zarr v3 group inside a zip** with stored entries (chunks are zstd). Open it with zarr's
 `ZipStore(path, mode="r")`, or read the JSON and chunks from the zip yourself.
 
 - The root `zarr.json`'s attributes hold `duckn` metadata. Its `extensions.embedding`:
   - `group.members`: the lattice arrays, in order.
   - `version` is this extension's version; `format_version` is the file layout's.
-  - `data_box`: the half-open box of MODEL-grid voxels (`lo`, `hi`) that held image data (see
-    "The model grid" and "Which tokens saw the scan").
+  - `data_box`: the half-open box of MODEL-grid voxels (`lo`, `hi`) that held image data, in the
+    lattices' axis order (as `kernel` and `extent` are). See "The model grid" and "Which tokens saw
+    the scan".
   - `provenance`: `encoder`, `weights`, `license`, and `input` - the input CT's identity and its
     `grid` **as the CT file was delivered** (`shape`; `directions`, one LPS row per array axis,
     each row a full step - its length is the spacing, not a unit vector; `origin`; for a NIfTI,
@@ -45,8 +50,20 @@ For a lattice, with `o = space_origin` and `d_a = axes[a].space_direction`:
 
 Do not assume which anatomical direction an index axis runs: read `space_direction` (the RADAR and
 TotalSegmentator encoders store (Z, Y, X), and their Y may run anterior). The exact spacing is
-`|d_a|`. `centering: "cell"`: a token covers half a step either side of its center. The three
-`space` axes are followed by a `list` axis: the channels.
+`|d_a|`. `centering: "cell"`: a token is DRAWN as the box half a step either side of its center.
+What it SEES is wider - see `thickness` below (RADAR: 2.5 steps) - so a token drawn inside an organ
+still sees past the organ's edge. The three `space` axes are followed by a `list` axis: the channels.
+
+**To draw a lattice over a CT slice, go through world coordinates**, never through array axes - an
+index axis may run anterior or right-to-left, and `imshow` of the lattice beside the CT then
+comes out mirrored. For each CT pixel of the slice, take its world point `p` (your CT's own
+affine), and look up the token there:
+
+    D = np.array([d_0, d_1, d_2]).T            # columns are the steps
+    i = np.rint(np.linalg.solve(D, p - o))     # the token index at p (check it is inside the extent)
+
+Then paint the pixel with that token's value. The picture is in the CT's own orientation by
+construction.
 
 ## The model grid
 
@@ -56,7 +73,9 @@ along each axis, and its first voxel's center is at
 
     o - sum_a ((kernel[a] - 1) / 2) * d_a / kernel[a]
 
-Every lattice gives the same model grid. `data_box` is in its voxel indices.
+Every lattice gives the same model grid. `data_box` is in its voxel indices. It is NOT the CT's
+grid: it is whatever the encoder resampled the CT onto (RADAR: about 1 x 1 x 5 mm, in its own axis
+order, its outer edges on the CT's). Work in world coordinates and nothing depends on it.
 
 ## Stored values: float, or int8 with a transform
 
@@ -68,7 +87,8 @@ channel axis), and `slope` and `intercept`, one per channel. Decode it in float3
 
 This transform is defined here, not by duckn itself (yet). A duckn reader that does not know it
 treats the values' meaning as unknown - **never use the raw int8 values as tokens**: each channel
-has its own scale. Decoded tokens are within half a step of the originals (cosine to them about
+has its own scale. Each channel's range is spread over all 256 codes (-128 to 127), so decoded
+tokens are within half a step of the originals (cosine to them about
 0.9998 or better).
 
 ## Which tokens saw the scan
@@ -106,10 +126,16 @@ And in core duckn, per space axis:
 2. Keep tokens whose center (or most of whose box) is in the structure.
 3. Pool: normalize each token to unit length, average, normalize the average.
 
+With the encoder's head (which ships separately), gate as the head was trained: RADAR's pools every
+token whose box TOUCHES the structure, on all lattices. Fed only tokens whose centers are inside,
+small structures read wrongly (one normal scan: duodenum "diverticulum" 0.91 from 5 tokens, 0.02
+from its 20 touching ones).
+
 **Raw cosines are high everywhere** (any two body tokens are often 0.6-0.8 alike, pooled organs
-0.8-0.9), so a table of pooled organs compared directly is nearly uniform. Subtract a shared reference first - the mean of
-all in-extent tokens of that lattice, or of the body's - then compare by cosine. Compare within one
-lattice; different lattices rank structures differently.
+0.8-0.9), so a table of pooled organs compared directly is nearly uniform. Subtract a shared
+reference first - the mean of the unit-normalized in-extent tokens whose centers lie in the body
+(any labeled structure, or above about -500 HU) - from each pooled vector, then compare by cosine.
+Compare within one lattice; different lattices rank structures differently.
 
 ## License
 

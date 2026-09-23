@@ -50,7 +50,7 @@ FORMAT, VERSION = "feldglas-field", "0.1"
 ZARR_VERSION = "0.2"
 KNOWN_VERSIONS = {"0.1", "0.2"}
 EXTENSION, EXTENSION_VERSION = "embedding", "0.1"   # general, unregistered (duckn 456516e rule)
-SCHEMA = "README.md in this file; feldglas docs/embedding-field.md"   # a client has the first
+SCHEMA = "README.md (in this file)"                   # the design record is feldglas docs/embedding-field.md
 README = pathlib.Path(__file__).with_name("field_readme.md")   # packed into every field as README.md
 INTENT = "embedding-field"
 #: int8 tokens decode through a per-channel slope and intercept along the channel axis - a value

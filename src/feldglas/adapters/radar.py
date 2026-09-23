@@ -217,6 +217,11 @@ def field_from_export(arrays, meta: dict) -> Field:
     extra = {k: meta[k] for k in ("crop", "resample_target", "image_shape", "image_affine_ras",
                                   "input_shape", "input_affine_ras",
                                   "prep_max_abs_vs_upstream", "encode_s") if k in meta}
+    if "input_affine_ras" in meta:
+        # the delivered grid is provenance.input's; the LAS copy, y reversed against it, only
+        # alarmed a client (2026-09-22) - and the grid itself is exact without it
+        for k in ("image_shape", "image_affine_ras", "input_shape", "input_affine_ras"):
+            extra.pop(k, None)
     return Field(tokens=[arrays[f"tokens{j}"] for j in range(len(KERNELS))], kernels=KERNELS,
                  grid=Geometry(shape=tuple(g["shape"]), directions=tuple(tuple(row) for row in g["directions"]),
                                origin=tuple(g["origin"])),

@@ -142,6 +142,14 @@ Built (feldglas main, 2026-09-22):
   EXPLORATION section 2's point spread) and look offsets, and its input grid from the exporter's
   `image_affine_ras` (the LAS-reoriented image's grid: the CT's voxels, axes permuted and flipped);
   the null model states its layers (`encoder.stages.N`) and nothing it has not measured.
+- **`examples/organ_vectors.py`**, the simplest client: one vector per organ from the field and a
+  segmentation (zarr, numpy, SimpleITK; no feldglas), then organ-to-organ similarity (tokens whose
+  center is in the organ, body mean removed) and, given RADAR's head, finding scores per organ
+  (every token whose box TOUCHES the organ - the head's own gate; centers only read small organs
+  wrongly: duodenum "diverticulum" 0.91 from 5 tokens against 0.02 from 20). Its reader is held to
+  the store's by a test; on sample `159dff32` its scores agree with `gate.select(rule="any")` to ~0.04.
+  0.8 s a scan on the M2. The head needs `findings_en.npz` (the text table with upstream's English
+  names) beside `head.npz` - part of Not built 4.
 - Mixed-width lattices and `LatticeMeanHead` (`d5d8d09`); the atlas gates by haversack labels
   (`1e91eb2`); boxes centered correctly (`d4eaba1`).
 
@@ -199,7 +207,12 @@ prototype scored held-out liver at AUC 0.92, and centering took pooled-organ cos
 0.85 to 0.39 with sensible neighbors (liver-spleen 0.91, heart-aorta 0.92). Its findings, fixed in
 the guide: `extent` does not cover what RADAR cropped away before encoding (the converse is now
 stated); the model grid was undefined (a formula now); when to use `support.offset`; `directions`
-rows carry the spacing; `version` versus `format_version`. Left open: the identity is a bare series
+rows carry the spacing; `version` versus `format_version`. A third agent, on an int8 field, decoded it from the README alone
+(placement best at the stated position, 0.552 balanced accuracy against 0.28-0.32 mirrored); its
+findings - a worked, world-coordinate recipe for drawing a slice (its first overlay came out
+mirrored), `data_box`'s axis order, reach against the drawn box, the model grid against the CT,
+`duckn` undefined, the reoriented affine in `extra`, the body mean's definition - are in the guide
+or fixed. Left open: the identity is a bare series
 id with no archive or digest (Not built 2), and **`thickness` may understate the reach** - its
 strongest liver outlier sat at the liver dome against the heart with no lesion in the CT, as if the
 fine tokens saw more than 20 mm.

@@ -152,5 +152,7 @@ class FromExport(unittest.TestCase):
         ras = delivered[:3, :3] @ ijk + delivered[:3, 3]
         lps = np.asarray(g["origin"]) + np.asarray(g["directions"]).T @ ijk
         np.testing.assert_allclose(lps, ras * [-1, -1, 1], atol=1e-9)
+        extra = radar.field_from_export(arrays, meta).provenance.extra
+        self.assertFalse({"image_affine_ras", "input_affine_ras"} & set(extra))   # one grid, in one place
         del meta["input_affine_ras"], meta["input_shape"]            # only the reoriented grid: claim none
         self.assertNotIn("grid", radar.field_from_export(arrays, meta).provenance.input)
