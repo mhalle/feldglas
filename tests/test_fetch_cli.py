@@ -177,3 +177,19 @@ class Command(Base):
         r = self.run_cli("score", self.server.url + "/s0.zarr.zip", "--labels", self.server.url + "/s0.seg.nrrd",
                          "--reference", self.d / "missing.zarr.zip", "--structure", "liver")
         self.assertEqual(r.exit_code, 1); self.assertNotIn("Traceback", r.output)
+
+    def test_health_reports_readiness_and_a_servers_health(self):
+        (self.served / "v1").mkdir(exist_ok=True)
+        (self.served / "v1/health").write_text(json.dumps({"status": "ok", "version": "0.12.9"}))
+        r = self.run_cli("health", "--json", "--haversack", self.server.url)
+        self.assertEqual(r.exit_code, 0, r.output)
+        d = json.loads(r.output)
+        self.assertTrue(d["ok"]); self.assertEqual(d["problems"], [])
+        self.assertEqual(d["server"]["health"]["version"], "0.12.9")
+        self.assertIn("score", d["commands"]); self.assertEqual(set(d["exit_codes"]), {"0", "1", "2"})
+        self.assertEqual(d["reads"]["field"]["versions"], ["0.2"])
+        r = CliRunner().invoke(main, ["--token", "s3cret", "health", "--json", "--haversack", "http://127.0.0.1:9"])
+        self.assertEqual(r.exit_code, 1)
+        d = json.loads(r.output)
+        self.assertFalse(d["ok"]); self.assertFalse(d["server"]["reachable"]); self.assertTrue(d["token"]["set"])
+        self.assertNotIn("s3cret", r.output)

@@ -14,6 +14,7 @@ own origin. Every command takes ``--json``.
 from __future__ import annotations
 
 import json
+import pathlib
 import sys
 
 import click
@@ -86,6 +87,91 @@ class _Group(click.Group):
 def main(ctx, token):
     """Read embedding fields: describe them, pool organs, and find what is unlike normal tissue."""
     ctx.obj = {"token": token}
+
+
+EXIT_CODES = {0: "success (health: nothing wrong)", 1: "refused or failed; the message names why (health: a problem found)",
+              2: "usage: a missing or conflicting option"}
+# what each optional dependency makes possible, so a missing one is reported by what it costs
+_FEATURES = {"zarr": "open fields and references", "obstore": "files by http(s) URL", "click": "this command",
+             "scipy": "--erode", "duckn": "writing fields (feldglas.store)", "rankfield": "feldglas's internals"}
+
+
+def _version(dist):
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        return version(dist)
+    except PackageNotFoundError:
+        return None
+
+
+@main.command()
+@click.option("--haversack", metavar="SERVER", help="also check a haversack server (its /v1/health)")
+@click.option("--json", "as_json", is_flag=True)
+@click.pass_context
+def health(ctx, haversack, as_json):
+    """Is this installation ready, and what can it read? Exit 0 when nothing is wrong, 1 otherwise -
+    for an agent to check before it drives anything else. Never prints a token."""
+    import os, platform, time
+    from . import client as fc
+    from .paths import cache_dir
+    problems = []
+    deps = {d: _version(d) for d in _FEATURES}
+    deps["numpy"] = _version("numpy")
+    for d, what in _FEATURES.items():
+        if deps[d] is None and d not in ("duckn",):
+            problems.append(f"{d} is not installed: no {what} (pip install feldglas[client])")
+    cache = cache_dir()
+    http = cache / "http"
+    fetched = [q for q in http.glob("*") if q.is_file() and not q.name.endswith((".json", ".partial"))] if http.is_dir() else []
+    writable = os.access(cache if cache.exists() else cache.parent if cache.parent.exists() else pathlib.Path.home(), os.W_OK)
+    if not writable:
+        problems.append(f"the cache {cache} is not writable: URLs cannot be fetched (set $FELDGLAS_CACHE)")
+    token = ctx.obj["token"]
+    server = None
+    if haversack:
+        from obstore import get
+        from obstore.store import HTTPStore
+        import urllib.parse
+        u = urllib.parse.urlsplit(haversack.rstrip("/"))
+        t0 = time.time()
+        try:
+            st = HTTPStore.from_url(f"{u.scheme}://{u.netloc}", client_options={"allow_http": u.scheme == "http",
+                                                                               "timeout": "30s", "user_agent": "feldglas"})
+            body = json.loads(bytes(get(st, (u.path.strip("/") + "/v1/health").lstrip("/")).bytes()))
+            server = {"url": haversack, "reachable": True, "seconds": round(time.time() - t0, 3), "health": body}
+        except Exception as e:
+            server = {"url": haversack, "reachable": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
+            problems.append(f"the haversack server {haversack} did not answer /v1/health ({type(e).__name__})")
+    from .labels import read_seg_nrrd  # noqa: F401 - importable is part of healthy
+    data = {
+        "ok": not problems, "problems": problems,
+        "feldglas": _version("feldglas"), "python": platform.python_version(),
+        "dependencies": {d: {"version": v, "enables": _FEATURES.get(d, "arrays")} for d, v in deps.items()},
+        "reads": {"field": {"format": fc.FORMAT, "versions": sorted(fc.FORMAT_VERSIONS),
+                            "extension": f"{fc.EXTENSION} {fc.EXTENSION_VERSION}", "value_transforms": [fc.AXIS_LINEAR]},
+                  "reference": {"format": fc.Reference.FORMAT, "version": fc.Reference.FORMAT_VERSION},
+                  "labels": {"seg.nrrd": ["labelmap style (one layer)", "layered style (3D Slicer)", "LPS", "RAS"],
+                             "plain labelmap .nrrd": "with names= / --names"},
+                  "urls": ["http", "https"] if deps["obstore"] else []},
+        "cache": {"path": str(cache), "exists": cache.exists(), "writable": writable, "fetched_files": len(fetched),
+                  "fetched_bytes": sum(q.stat().st_size for q in fetched), "env": "FELDGLAS_CACHE"},
+        "token": {"set": bool(token), "from": "--token or $FELDGLAS_TOKEN", "sent_to": "each URL's own origin only"},
+        "server": server,
+        "commands": sorted(main.commands), "exit_codes": EXIT_CODES,
+    }
+    text = [f"feldglas {data['feldglas']} (python {data['python']}): {'ok' if data['ok'] else 'PROBLEMS'}"]
+    text += [f"  problem: {p}" for p in problems]
+    text += [f"  {d:10} {v['version'] or 'MISSING':10} {v['enables']}" for d, v in data["dependencies"].items()]
+    text.append(f"  reads fields {fc.FORMAT} {sorted(fc.FORMAT_VERSIONS)}, references {fc.Reference.FORMAT} "
+                f"{fc.Reference.FORMAT_VERSION}, .seg.nrrd (labelmap and layered, LPS/RAS), URLs {data['reads']['urls']}")
+    text.append(f"  cache {cache} ({'writable' if writable else 'NOT writable'}; {len(fetched)} fetched files, "
+                f"{data['cache']['fetched_bytes'] / 1e6:.1f} MB); token {'set' if token else 'not set'}")
+    if server:
+        text.append(f"  server {haversack}: " + (f"up in {server['seconds']} s, version {server['health'].get('version')}"
+                                                   if server["reachable"] else f"NOT reachable - {server['error']}"))
+    _out(data, as_json, "\n".join(text))
+    if problems:
+        ctx.exit(1)
 
 
 @main.command()
