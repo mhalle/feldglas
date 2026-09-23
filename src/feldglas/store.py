@@ -53,6 +53,42 @@ EXTENSION, EXTENSION_VERSION = "embedding", "0.1"   # general, unregistered (duc
 SCHEMA = "README.md in this file; feldglas docs/embedding-field.md"   # a client has the first
 README = pathlib.Path(__file__).with_name("field_readme.md")   # packed into every field as README.md
 INTENT = "embedding-field"
+#: int8 tokens decode through a per-channel slope and intercept along the channel axis - a value
+#: transform duckn core does not define yet (2026-09-22, the user: "try" it without a standard).
+#: duckn's rule makes that SAFE: a reader meeting an unknown transform name treats the value mapping
+#: as unknown and offers only the stored integers, never passes them off as the embeddings - where
+#: scales kept only in an extension would leave a plain duckn reader taking int8 for the values.
+#: Namespaced by the extension that defines it (field_readme.md), so a later duckn transform cannot
+#: collide with it. Measured on a RADAR field against its fp16 tokens: token cosine >= 0.9998,
+#: pooled organ cosine >= 0.99992, 33.8 -> 15.7 MB; one scale per lattice (duckn's standard
+#: ``linear``) was ten times worse (token cosine >= 0.9968).
+AXIS_LINEAR = "embedding.linear_along_axis"
+
+
+def _quantize(t: np.ndarray):
+    """``(int8 array, slope, intercept)`` per channel (last axis): each channel's range onto
+    -128..127. Decoding is ``slope * q + intercept`` in float32."""
+    t = np.asarray(t, np.float32)
+    lo, hi = t.min(axis=0), t.max(axis=0)
+    slope = ((hi - lo) / np.float32(255)).astype(np.float32)
+    slope[slope == 0] = 1.0                          # a constant channel: any slope decodes it exactly
+    intercept = (lo + np.float32(128) * slope).astype(np.float32)
+    q = np.clip(np.rint((t - intercept) / slope), -128, 127).astype(np.int8)
+    return q, slope, intercept
+
+
+def _decode(q: np.ndarray, transforms, path, name) -> np.ndarray:
+    """The embeddings from a lattice's stored values, or a refusal: a transform this reader does
+    not know leaves the values' meaning undefined (duckn), and they are never offered as tokens."""
+    if not transforms:
+        return q
+    if len(transforms) != 1 or transforms[0].get("name") != AXIS_LINEAR:
+        raise ValueError(f"{path}: {name!r} is stored through {[t.get('name') for t in transforms]}; this reader "
+                         f"decodes only {AXIS_LINEAR!r} - its tokens' values are undefined here")
+    par = transforms[0]["parameters"]
+    if par.get("axis") != q.ndim - 1 or len(par["slope"]) != q.shape[-1] or len(par["intercept"]) != q.shape[-1]:
+        raise ValueError(f"{path}: {name!r}'s {AXIS_LINEAR} does not fit its channel axis")
+    return q.astype(np.float32) * np.asarray(par["slope"], np.float32) + np.asarray(par["intercept"], np.float32)
 DUCKN_VERSION = "1.0"                                 # geometry and a list axis: nothing past 1.0
 SPACE = "left-posterior-superior"                     # rankfield's and haversack's world
 CHUNK = 16                                            # tokens per spatial chunk edge; channels whole
@@ -64,11 +100,14 @@ def is_zarr_zip(path) -> bool:
 
 
 def write_field(path, field: Field, token_dtype=np.float16) -> pathlib.Path:
-    """``<name>.zarr.zip`` writes 0.2 (the duckn form); ``<name>.npz`` writes 0.1."""
+    """``<name>.zarr.zip`` writes 0.2 (the duckn form); ``<name>.npz`` writes 0.1. ``token_dtype``
+    int8 stores 0.2's tokens through ``AXIS_LINEAR`` (about half the size of fp16)."""
     path = pathlib.Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if is_zarr_zip(path):
         return _write_zarr(path, field, token_dtype)
+    if np.dtype(token_dtype).kind != "f":
+        raise ValueError(f"{path}: 0.1 (.npz) has no value transform - int8 tokens need a .zarr.zip")
     meta = {"format": FORMAT, "version": VERSION,
             "kernels": [list(k) for k in field.kernels],
             "grid": {"shape": list(field.grid.shape), "directions": [list(r) for r in field.grid.directions],
@@ -137,7 +176,7 @@ def _group_id(field: Field) -> str:
     return f"{field.provenance.encoder}/{field.provenance.source}"
 
 
-def _lattice_attrs(field: Field, j: int) -> dict:
+def _lattice_attrs(field: Field, j: int, transform: dict | None = None) -> dict:
     """One lattice array: placed by duckn core, described by the ``embedding`` extension."""
     from duckn import AxisMetadata, DucknMetadata
     from duckn.models import duckn_attrs
@@ -165,7 +204,7 @@ def _lattice_attrs(field: Field, j: int) -> dict:
         ext["support"] = {"offset": _mm(offset), "unit": "mm"}
     return duckn_attrs(DucknMetadata(
         version=DUCKN_VERSION, space=SPACE, space_origin=[round(float(v), 9) for v in g.origin], axes=axes,
-        intent=INTENT, extensions={EXTENSION: ext}))
+        intent=INTENT, value_transforms=[transform] if transform else None, extensions={EXTENSION: ext}))
 
 
 def _root_attrs(field: Field, names: list[str]) -> dict:
@@ -193,12 +232,21 @@ def _write_zarr(path: pathlib.Path, field: Field, token_dtype) -> pathlib.Path:
         names = []
         for j, t in enumerate(field.tokens):
             shape = (*field.lattice_shape(j), field.widths[j])
-            data = np.ascontiguousarray(np.asarray(t, token_dtype).reshape(shape))   # row-major = (Z, Y, X, C)
+            transform = None
+            if np.dtype(token_dtype) == np.int8:
+                q, slope, intercept = _quantize(t)
+                data = np.ascontiguousarray(q.reshape(shape))
+                transform = {"name": AXIS_LINEAR, "parameters": {"axis": 3, "slope": slope.tolist(),
+                                                                 "intercept": intercept.tolist()}}
+            elif np.dtype(token_dtype).kind == "f":
+                data = np.ascontiguousarray(np.asarray(t, token_dtype).reshape(shape))   # row-major = (Z, Y, X, C)
+            else:
+                raise ValueError(f"token dtype {np.dtype(token_dtype)}: a field is float or int8 (with {AXIS_LINEAR})")
             name = f"lattice_{j}"
             arr = root.create_array(name, shape=shape, dtype=data.dtype,
                                     chunks=tuple(min(CHUNK, s) for s in shape[:3]) + (shape[3],),
                                     compressors=zarr.codecs.ZstdCodec(level=3),
-                                    attributes=_lattice_attrs(field, j))
+                                    attributes=_lattice_attrs(field, j, transform))
             arr[:] = data
             names.append(name)
         root.attrs.update(_root_attrs(field, names))
@@ -304,7 +352,7 @@ def _read_zarr(path) -> Field:
         described.append(a)
         t = [ax.get("thickness") for ax in arr.attrs.asdict()["duckn"]["axes"][:3]]
         thickness.append(None if all(v is None for v in t) else tuple(float(v) for v in t))
-        data = arr[:]
+        data = _decode(arr[:], arr.attrs.asdict()["duckn"].get("value_transforms"), path, name)
         tokens.append(data.reshape(-1, data.shape[-1]))
     grid = _model_grid(placed[0], kernels[0])
     box = ext.get("data_box")

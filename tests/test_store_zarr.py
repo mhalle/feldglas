@@ -202,3 +202,76 @@ class ZarrStore(unittest.TestCase):
         q = write_field(pathlib.Path(self.d.name) / "old.npz", f)
         self.assertEqual(read_meta(q)["version"], "0.1")
         self.assertEqual(read_field(q).widths, f.widths)
+
+
+class Int8(unittest.TestCase):
+    """int8 through the ``embedding.linear_along_axis`` value transform (2026-09-22)."""
+
+    def setUp(self):
+        self.d = tempfile.TemporaryDirectory(); self.addCleanup(self.d.cleanup)
+        self.f = oblique_field()
+        self.f.tokens[1][:, 7] = 3.25                                # a constant channel decodes exactly
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")                           # no 0/0 on the constant channel
+            self.p = write_field(pathlib.Path(self.d.name) / "q.zarr.zip", self.f, token_dtype=np.int8)
+
+    def test_tokens_come_back_within_half_a_step_per_channel(self):
+        g = read_field(self.p)
+        for a, b in zip(g.tokens, self.f.tokens):
+            self.assertEqual(a.dtype, np.float32)
+            step = (b.max(0) - b.min(0)) / 255
+            self.assertTrue(np.all(np.abs(a - b) <= step / 2 + 1e-5 * (np.abs(b).max() + 1)))
+            cos = (a * b).sum(1) / np.linalg.norm(a, axis=1) / np.linalg.norm(b, axis=1)
+            self.assertGreater(cos.min(), 0.999)
+        np.testing.assert_array_equal(g.tokens[1][:, 7], 3.25)
+
+    def test_the_array_is_int8_and_duckn_names_the_transform(self):
+        from duckn import DucknMetadata
+        from duckn.models import validate_against_shape
+        root = zarr.open_group(store=zarr.storage.ZipStore(str(self.p), mode="r"), mode="r")
+        arr = root["lattice_2"]
+        self.assertEqual(arr.dtype, np.int8)
+        meta = DucknMetadata(**arr.attrs.asdict()["duckn"])
+        validate_against_shape(meta, arr.shape)
+        (t,) = meta.value_transforms
+        self.assertEqual((t.name, t.parameters["axis"], len(t.parameters["slope"])), ("embedding.linear_along_axis", 3, 320))
+
+    def test_a_float_field_states_no_transform(self):
+        q = write_field(pathlib.Path(self.d.name) / "f.zarr.zip", self.f)
+        with zipfile.ZipFile(q) as z:
+            self.assertNotIn("value_transforms", z.read("lattice_0/zarr.json").decode())
+
+    def _edit(self, edit) -> pathlib.Path:
+        bad = pathlib.Path(self.d.name) / "bad.zarr.zip"
+        with zipfile.ZipFile(self.p) as zin, zipfile.ZipFile(bad, "w", zipfile.ZIP_STORED) as zout:
+            for info in zin.infolist():
+                data = zin.read(info)
+                if info.filename == "lattice_0/zarr.json":
+                    doc = json.loads(data); edit(doc["attributes"]["duckn"]["value_transforms"][0]["parameters"])
+                    data = json.dumps(doc).encode()
+                zout.writestr(info.filename, data)
+        return bad
+
+    def test_a_transform_that_does_not_fit_the_channels_is_refused(self):
+        def short(p): p["slope"] = p["slope"][:-1]
+        def axis(p): p["axis"] = 0
+        for edit in (short, axis):
+            with self.assertRaisesRegex(ValueError, "does not fit"):
+                read_field(self._edit(edit))
+
+    def test_an_unknown_transform_is_refused_never_read_as_values(self):
+        bad = pathlib.Path(self.d.name) / "bad.zarr.zip"
+        with zipfile.ZipFile(self.p) as zin, zipfile.ZipFile(bad, "w", zipfile.ZIP_STORED) as zout:
+            for info in zin.infolist():
+                data = zin.read(info)
+                if info.filename == "lattice_0/zarr.json":
+                    doc = json.loads(data); doc["attributes"]["duckn"]["value_transforms"][0]["name"] = "something_else"
+                    data = json.dumps(doc).encode()
+                zout.writestr(info.filename, data)
+        with self.assertRaisesRegex(ValueError, "undefined"):
+            read_field(bad)
+
+    def test_int8_is_refused_in_the_npz_form(self):
+        with self.assertRaisesRegex(ValueError, "value transform"):
+            write_field(pathlib.Path(self.d.name) / "q.npz", make_field(), token_dtype=np.int8)

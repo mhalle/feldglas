@@ -45,10 +45,18 @@ Analogy with the family's class field:
 5. **Clients pool on a CPU**, numpy only (`feldglas.session`, `gate`, `heads`): 0.2-0.3 ms a box.
 6. **Geometry comes from duckn's models, never hand-written dicts**, and the model grid is DERIVED
    from the lattices, with every lattice checked against it (one fact, one place).
-7. **int8 goes through a value transform in duckn core**, never sibling scale arrays (duckn §4.3
-   warns against metadata and bytes kept in agreement by hand; zarr's scale-offset codec is a
-   numcodecs extension JavaScript readers lack). Until duckn has it, fields are fp16 with no
-   transform.
+7. **int8 goes through a value transform, never sibling scale arrays** (duckn §4.3 warns against
+   metadata and bytes kept in agreement by hand; zarr's scale-offset codec is a numcodecs extension
+   JavaScript readers lack). Built 2026-09-22 WITHOUT waiting for duckn (the user: try it): the
+   transform `embedding.linear_along_axis` (`axis`, per-channel `slope` and `intercept`) sits in
+   core `value_transforms`, namespaced by this record. duckn's own rule makes that safe - a reader
+   meeting an unknown transform name treats the value mapping as unknown and offers only the stored
+   integers - where scales kept only in an extension would let a plain duckn reader take int8 for
+   the values. feldglas refuses any transform it does not know. Measured on a RADAR field against
+   its fp16 tokens: token cosine >= 0.9998, pooled organ cosine (shared mean removed) >= 0.99992,
+   33.8 -> 15.7 MB (zstd). One scale per lattice - duckn's standard scalar `linear`, no invention -
+   was ten times worse (token cosine >= 0.9968, 12.9 MB); fp16 against fp32 is itself ~0.9997. If
+   duckn core adds a linear along an axis, rename to it. Float (fp16) stays the default.
 8. **License travels on the file.** The embeddings inherit the weights' license (RADAR: CC BY-NC-SA
    4.0; null model: Apache-2.0).
 
@@ -148,8 +156,9 @@ Not built:
    `~/.cache/feldglas/radar/`; RADAR's encoder imported from a local upstream clone).
 5. A client command: `feldglas describe FIELD --labels labels.seg.nrrd -o radar.json` through
    `Session.table()`.
-6. duckn core: `linear` along an axis (per-channel slope and intercept), for int8. A duckn change of
-   its own - duckn has its own sessions.
+6. duckn core: `linear` along an axis (per-channel slope and intercept). int8 fields work without it
+   (decision 7); a core transform would let generic duckn readers decode them. A duckn change of its
+   own - duckn has its own sessions.
 7. Delivery through haversack: a `radar` deliverable (a file in the result's generation, not part
    of its key) returning the field beside the labels. Needs feldglas published (it has no remote).
 8. Derived products, later: multiscale lesion-probability maps as seg-extension fractional label
@@ -182,3 +191,15 @@ guide says so; (5) reach width-or-radius and offset sign unstated - defined abov
 less reliable, (7) raw cosines high everywhere (a shared mean must come off before comparing) - in
 the guide; (8) `schema` pointed at a file the client lacks - the guide, `src/feldglas/field_readme.md`,
 is packed into every field as `README.md` and `schema` names it first.
+
+A second agent, same rules, given only the rebuilt field (whose packed `README.md` was its sole
+documentation), the CT and the labels: the input grid matched `ct.nii.gz` to < 1e-9 mm, placement
+held (ridge R2 0.64 as stated against 0.16-0.30 flipped, peak within half a step), the liver
+prototype scored held-out liver at AUC 0.92, and centering took pooled-organ cosines from a median
+0.85 to 0.39 with sensible neighbors (liver-spleen 0.91, heart-aorta 0.92). Its findings, fixed in
+the guide: `extent` does not cover what RADAR cropped away before encoding (the converse is now
+stated); the model grid was undefined (a formula now); when to use `support.offset`; `directions`
+rows carry the spacing; `version` versus `format_version`. Left open: the identity is a bare series
+id with no archive or digest (Not built 2), and **`thickness` may understate the reach** - its
+strongest liver outlier sat at the liver dome against the heart with no lesion in the CT, as if the
+fine tokens saw more than 20 mm.

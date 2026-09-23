@@ -21,11 +21,15 @@ A **zarr v3 group inside a zip** with stored entries (chunks are zstd). Open it 
 
 - The root `zarr.json`'s attributes hold `duckn` metadata. Its `extensions.embedding`:
   - `group.members`: the lattice arrays, in order.
-  - `data_box`: the half-open box of MODEL-grid voxels (`lo`, `hi`) that held the scanned image.
+  - `version` is this extension's version; `format_version` is the file layout's.
+  - `data_box`: the half-open box of MODEL-grid voxels (`lo`, `hi`) that held image data (see
+    "The model grid" and "Which tokens saw the scan").
   - `provenance`: `encoder`, `weights`, `license`, and `input` - the input CT's identity and its
-    `grid` **as the CT file was delivered** (`shape`, `directions` one LPS row per array axis,
-    `origin`; for a NIfTI, array axes are nibabel's i, j, k). Compare this grid with your CT's to
-    know a mask on it belongs to this image.
+    `grid` **as the CT file was delivered** (`shape`; `directions`, one LPS row per array axis,
+    each row a full step - its length is the spacing, not a unit vector; `origin`; for a NIfTI,
+    array axes are nibabel's i, j, k). Compare this grid with your CT's to know a mask on it
+    belongs to this image. `identity` is what the encoder was told about the series (it may be
+    only an id); the grid is the check you can make yourself.
   - `provenance.extra` is the encoder's internal record (its crop, resample, timings) - not an
     interface; do not depend on its keys.
 - Each lattice is an array of shape `(A0, A1, A2, C)`, C order: `arr[i0, i1, i2, :]` is one token.
@@ -44,13 +48,41 @@ TotalSegmentator encoders store (Z, Y, X), and their Y may run anterior). The ex
 `|d_a|`. `centering: "cell"`: a token covers half a step either side of its center. The three
 `space` axes are followed by a `list` axis: the channels.
 
+## The model grid
+
+The encoder read the CT resampled onto its own MODEL grid; each token is a box of `kernel` model
+voxels (in the lattice's axis order). For any lattice, the model grid has step `d_a / kernel[a]`
+along each axis, and its first voxel's center is at
+
+    o - sum_a ((kernel[a] - 1) / 2) * d_a / kernel[a]
+
+Every lattice gives the same model grid. `data_box` is in its voxel indices.
+
+## Stored values: float, or int8 with a transform
+
+A lattice is stored either as floats (the tokens as they are) or as **int8**. An int8 lattice's
+`duckn.value_transforms` holds one entry, `embedding.linear_along_axis`, with `axis` (3: the
+channel axis), and `slope` and `intercept`, one per channel. Decode it in float32:
+
+    tokens = int8_values.astype(float32) * slope[channel] + intercept[channel]
+
+This transform is defined here, not by duckn itself (yet). A duckn reader that does not know it
+treats the values' meaning as unknown - **never use the raw int8 values as tokens**: each channel
+has its own scale. Decoded tokens are within half a step of the originals (cosine to them about
+0.9998 or better).
+
 ## Which tokens saw the scan
 
 Encoders pad their input, so a lattice usually extends past the scan - often by a third or more.
 Each lattice's `extensions.embedding.extent` (`lo`, `hi`, half-open token indices) holds the tokens
-whose box contains any scanned voxel. **Drop tokens outside it**: they saw padding only, and can
-look unlike anything real (a padded deep token's norm can exceed the body's). Tokens in the first
-or last row of the extent saw partly padding and are less reliable than interior ones.
+whose box contains any voxel of `data_box` - image the encoder was given. **Drop tokens outside
+it**: they saw padding only, and can look unlike anything real (a padded deep token's norm can
+exceed the body's). Tokens in the first or last row of the extent saw partly padding and are less
+reliable than interior ones.
+
+The converse does not hold: an encoder may also CROP the CT before it starts (RADAR trims air
+margins), so parts of your CT near its edges may lie under no token at all. Compare the extent's
+world box with your CT's to see what the field does not cover.
 
 ## What each lattice says about itself
 
@@ -59,7 +91,9 @@ On `extensions.embedding` of each lattice:
 - `metric`, `normalized` (false: normalize yourself), `kernel` (model voxels per token), `group`.
 - `support.offset` (mm along the lattice's three axes, optional): where a token's evidence is
   centered MINUS where its box is drawn; positive toward increasing index. The grid is exact - the
-  offset says where the encoder actually looks.
+  offset says where the encoder actually looks. To gate by where a token looks rather than where
+  it is drawn, add the offset to the token's center (along each axis's unit direction) before
+  sampling a mask. It is a fraction of a step; plain centers are fine for most uses.
 
 And in core duckn, per space axis:
 - `thickness` (mm, optional): the full width of a token's measured reach along that axis. A map
@@ -72,8 +106,8 @@ And in core duckn, per space axis:
 2. Keep tokens whose center (or most of whose box) is in the structure.
 3. Pool: normalize each token to unit length, average, normalize the average.
 
-**Raw cosines are high everywhere** (any two body tokens are often 0.6-0.8 alike), so a table of
-pooled organs compared directly is nearly uniform. Subtract a shared reference first - the mean of
+**Raw cosines are high everywhere** (any two body tokens are often 0.6-0.8 alike, pooled organs
+0.8-0.9), so a table of pooled organs compared directly is nearly uniform. Subtract a shared reference first - the mean of
 all in-extent tokens of that lattice, or of the body's - then compare by cosine. Compare within one
 lattice; different lattices rank structures differently.
 

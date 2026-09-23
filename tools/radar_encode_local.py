@@ -123,6 +123,7 @@ def main():
     ap.add_argument("ct"); ap.add_argument("--device", default="auto"); ap.add_argument("--fp16", action="store_true")
     ap.add_argument("--no-mask", action="store_true", help="encoder only: no native mask, about half the time and memory")
     ap.add_argument("--slab", type=int, default=16, help="encoder only: run the full-resolution stages this many slices at a time (exact; 0 = whole volume)")
+    ap.add_argument("--int8", action="store_true", help="store tokens as int8 through a per-channel linear (.zarr.zip only; about half the size)")
     ap.add_argument("--series", default="", help="the series' identity (default: the file name's stem)")
     ap.add_argument("--checkpoint", default=""); ap.add_argument("--out", default=""); ap.add_argument("--check", default="")
     a = ap.parse_args()
@@ -200,7 +201,8 @@ def main():
         print(json.dumps(rep, indent=1))
     if a.out or not a.check:
         field = radar.field_from_export(arrays, meta)     # no native mask after an encoder-only encode: gate it by name
-        p = write_field(a.out or encoder_dir(radar.NAME) / "fields" / f"{u}.local.npz", field)
+        p = write_field(a.out or encoder_dir(radar.NAME) / "fields" / f"{u}.local.npz", field,
+                        token_dtype=np.int8 if a.int8 else np.float16)
         print(f"-> {p}")
 
 
