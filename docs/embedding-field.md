@@ -186,7 +186,7 @@ ride in the `embedding` extension or the group's attributes, and move when it la
 ## What is built, and what is not
 
 Built (feldglas main, 2026-09-22):
-- **Store 0.2** (`f4e4831`, aligned to this record the same evening, `src/feldglas/store.py`): the
+- **Store 0.2** (`4bd9efa`, aligned to this record the same evening, `src/feldglas/store.py`): the
   group, the C-order lattice arrays placed by duckn and checked by duckn's own `VolumeGeometry`, no
   mask, fp16, the model grid derived and cross-checked; `intent`, `thickness`, the `embedding`
   extension as above, and `provenance.input` (the input CT's identity and grid). A draft written
@@ -211,8 +211,8 @@ Built (feldglas main, 2026-09-22):
   lesion from 10 mm / -40 HU, with two false sites; 32 mm boxes flagged none. The technique is in
   the client guide ("Is a region unlike normal tissue?"). A shipped per-organ normal (a few donors'
   tokens or mean vectors, per protocol) would let a client do this with the field alone - not built.
-- Mixed-width lattices and `LatticeMeanHead` (`d5d8d09`); the atlas gates by haversack labels
-  (`1e91eb2`); boxes centered correctly (`d4eaba1`).
+- Mixed-width lattices and `LatticeMeanHead` (`ab5f73b`); the atlas gates by haversack labels
+  (`236ea87`); boxes centered correctly (`e54a23b`).
 
 Not built:
 1. The null model's reach and look offset (a phantom run like RADAR's), and its input grid: its
