@@ -33,7 +33,7 @@ and results (``normal_atlas_null.json``), the mean-per-lattice head, and no RADA
 detectors. The organ names are RADAR's either way - the null export maps TotalSegmentator's labels
 into RADAR's 36 organs - so boxes are drawn over the same organs by the same rules.
 """
-import csv, io, json, os, pathlib, time
+import csv, functools, io, json, os, pathlib, time
 
 import modal
 
@@ -107,9 +107,8 @@ def regions(u: str, digest: str, pid: str, coll: str, phase: str, seg_series: st
             occ = owner = None; lesions = np.zeros((0, 6))
             if seg_series:
                 import highdicom as hd
-                from idc_index import IDCClient
                 from scipy import ndimage
-                IDCClient().download_from_selection(seriesInstanceUID=[seg_series], downloadDir=f"{d}/seg", quiet=True)
+                _idc().download_from_selection(seriesInstanceUID=[seg_series], downloadDir=f"{d}/seg", quiet=True)
                 sg = hd.seg.segread(glob.glob(f"{d}/seg/**/*.dcm", recursive=True)[0])
                 v = sg.get_volume(combine_segments=False)
                 arr = np.asarray(v.array)
@@ -192,6 +191,14 @@ def regions(u: str, digest: str, pid: str, coll: str, phase: str, seg_series: st
 # zipfile, and every piece is a round trip on the Modal volume's network mount - ~5 MB/s. The null
 # model's region files (704-wide vectors, 5.8 GB for 475 scans) took 23 minutes to load that way
 # (py-spy: zipfile.read under np.load). One read_bytes per file is one round trip.
+
+
+@functools.lru_cache(maxsize=1)
+def _idc():
+    """One IDC client per container: constructing it loads its parquet index, which a local
+    profile (2026-09-22) showed costing more per scan than the sweep's own pooling."""
+    from idc_index import IDCClient
+    return IDCClient()
 
 
 def _head(field=None):
