@@ -226,3 +226,24 @@ class Variants(unittest.TestCase):
         self.assertEqual(g.provenance.encoder, "null-totalsegmentator")
         with self.assertRaises(KeyError):
             null.variant("null-nothing")
+
+
+class UniformBlocks(unittest.TestCase):
+    """RADAR's lattices share a width; pooled per lattice without its head they still need a block
+    each (2026-09-22, the mean-pooled RADAR atlas)."""
+
+    def test_a_uniform_field_can_be_laid_out_in_blocks_and_mean_pooled(self):
+        from conftest import make_field
+        from feldglas.heads import LatticeMeanHead
+        f = make_field(channels=8)
+        self.assertEqual(f.all_tokens().shape[1], 8)
+        b = f.all_tokens(blocks=True)
+        self.assertEqual(b.shape, (int(f.offsets[-1]), 24))
+        for j in range(3):
+            rows = slice(f.offsets[j], f.offsets[j + 1])
+            np.testing.assert_array_equal(b[rows, 8 * j:8 * j + 8], f.tokens[j])
+            self.assertFalse(np.delete(b[rows], np.s_[8 * j:8 * j + 8], axis=1).any())
+        head = LatticeMeanHead(f.widths)
+        v = head.pool(head.prepare(b), np.arange(int(f.offsets[-1])))
+        for j in range(3):                                   # every lattice counts once
+            self.assertAlmostEqual(float(np.linalg.norm(v[8 * j:8 * j + 8])), 1 / np.sqrt(3), places=6)

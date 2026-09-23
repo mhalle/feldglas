@@ -169,19 +169,26 @@ class Field:
         concatenated in the order given. ``offsets[-1]`` is the total."""
         return np.cumsum([0] + [int(np.prod(self.lattice_shape(j))) for j in range(self.lattices)])
 
-    def all_tokens(self, dtype=np.float32) -> np.ndarray:
+    def all_tokens(self, dtype=np.float32, blocks: bool | None = None) -> np.ndarray:
         """Every token, lattices concatenated - what a head's ``prepare`` takes.
 
         Lattices of different widths (2026-09-22, the null model - the contract's first growth
         from a second adapter) are laid side by side in CHANNELS as well as rows: lattice ``j``'s
         tokens fill columns ``block(j)`` and are zero elsewhere, so no two lattices' channels are
         ever added together - their channels mean different things. ``heads.LatticeMeanHead``
-        pools such a field block by block."""
-        if self.uniform:
+        pools such a field block by block. ``blocks=True`` lays out a uniform field the same way
+        (RADAR pooled per lattice without its attention, 2026-09-22); ``None`` blocks only mixed
+        widths."""
+        if blocks is None:
+            blocks = not self.uniform
+        if not blocks:
+            if not self.uniform:
+                raise ValueError(f"lattices of widths {self.widths} cannot share channels: blocks=True")
             return np.concatenate([np.asarray(t, dtype) for t in self.tokens])
-        out = np.zeros((int(self.offsets[-1]), self.channels), dtype)
+        edges = np.cumsum((0,) + self.widths)
+        out = np.zeros((int(self.offsets[-1]), int(edges[-1])), dtype)
         for j, t in enumerate(self.tokens):
-            out[self.offsets[j]:self.offsets[j + 1], self.block(j)] = t
+            out[self.offsets[j]:self.offsets[j + 1], edges[j]:edges[j + 1]] = t
         return out
 
     def block(self, j: int) -> slice:

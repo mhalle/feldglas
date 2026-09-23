@@ -98,11 +98,16 @@ def pool_sweep(field: Field, head, prepared, sw: Sweep, organ: np.ndarray, query
     """One vector per box, pooled on the ORGAN's tokens inside it. A box with no token under
     ``rule`` gets a row of NaN, so rows stay aligned with the sweep."""
     within = occupancies(field, organ)
-    out = np.full((len(sw.center), field.channels), np.nan, np.float32)
+    rows = {}
     for i, c in enumerate(sw.center):
         g = box_gate(field, c, sw.size_mm, rule=rule, within=within)
         if len(g):
-            out[i] = head.pool(prepared, g.index, query)
+            rows[i] = head.pool(prepared, g.index, query)
+    # the HEAD's width, not the field's: a mean per lattice of RADAR is 3 x 256 (2026-09-22)
+    width = len(next(iter(rows.values()))) if rows else field.channels
+    out = np.full((len(sw.center), width), np.nan, np.float32)
+    for i, v in rows.items():
+        out[i] = v
     return out
 
 

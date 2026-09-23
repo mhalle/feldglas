@@ -37,6 +37,15 @@ class TestSweep(unittest.TestCase):
             g = select(self.field, box(self.field, sw.center[i], 32.0), within=self.organ)
             np.testing.assert_allclose(X[i], head.pool(prepared, g.index), atol=1e-6)
 
+    def test_a_head_wider_than_the_field_sets_the_width(self):
+        from feldglas.heads import LatticeMeanHead                  # RADAR without its head: 3 x 256
+        head = LatticeMeanHead(self.field.widths); prepared = head.prepare(self.field.all_tokens(blocks=True))
+        sw = na.sweep(self.field, self.organ, 32.0)
+        X = na.pool_sweep(self.field, head, prepared, sw, self.organ, None)
+        self.assertEqual(X.shape, (len(sw.center), 3 * self.field.channels))
+        g = select(self.field, box(self.field, sw.center[0], 32.0), within=self.organ)
+        np.testing.assert_allclose(X[0], head.pool(prepared, g.index), atol=1e-6)
+
     def test_one_scan_against_a_normal_model(self):
         from feldglas.observe import NormalModel
         head = MeanPoolHead(); prepared = head.prepare(self.field.all_tokens())

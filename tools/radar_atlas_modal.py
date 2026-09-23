@@ -60,13 +60,17 @@ _STORE = os.environ.get("FELDGLAS_STORE", "")
 # volume and results file; RADAR keeps the names it had. The null model has no head of its own
 # (mean per lattice) and no vocabulary, so the two RADAR-finding detectors run for RADAR only.
 ENCODER = os.environ.get("FELDGLAS_ENCODER", "radar")
-# encoder -> (its work volume, its results' suffix). RADAR keeps the names it had.
-ENCODERS = {"radar": ("feldglas-radar-work", ""),
-            "null-totalsegmentator": ("feldglas-null-work", "_null"),
-            "null-totalsegmentator-1.5mm": ("feldglas-null15-work", "_null15")}
+# variant -> (whose fields, its work volume, its results' suffix, how a gate is pooled). RADAR
+# keeps the names it had. "radar-mean" (2026-09-22) is RADAR's own stored fields pooled WITHOUT its
+# head - the mean per lattice, as the null models are - the pooling control 5.12 left open: can a
+# normal atlas see disease in raw tokens, with no learned attention or projection?
+ENCODERS = {"radar": ("radar", "feldglas-radar-work", "", "head"),
+            "radar-mean": ("radar", "feldglas-radarmean-work", "_radar_mean", "mean"),
+            "null-totalsegmentator": ("null-totalsegmentator", "feldglas-null-work", "_null", "mean"),
+            "null-totalsegmentator-1.5mm": ("null-totalsegmentator-1.5mm", "feldglas-null15-work", "_null15", "mean")}
 if ENCODER not in ENCODERS:
     raise SystemExit(f"FELDGLAS_ENCODER={ENCODER!r}: one of {sorted(ENCODERS)}")
-SUFFIX = ENCODERS[ENCODER][1]
+FIELDS, _VOLUME, SUFFIX, POOL = ENCODERS[ENCODER]
 TWIN = os.environ.get("HAVERSACK_TWIN", "https://<twin-host>")
 LABEL_TASKS = ("ts.v2:total", "ts.v2:total_fast")    # the first the twin has, in this order
 _SECRET = os.environ.get("FELDGLAS_MODAL_SECRET", "feldglas-r2")
@@ -77,7 +81,7 @@ image = (modal.Image.debian_slim(python_version="3.12").apt_install("git")
                       "provender @ git+https://github.com/mhalle/provender.git@v0.1.1")
          .env({"FELDGLAS_STORE": _STORE, "FELDGLAS_ENCODER": ENCODER})
          .add_local_python_source("feldglas"))
-work = modal.Volume.from_name(ENCODERS[ENCODER][0], create_if_missing=True)
+work = modal.Volume.from_name(_VOLUME, create_if_missing=True)
 app = modal.App("feldglas-radar-atlas" if ENCODER == "radar" else f"feldglas-{ENCODER.replace('totalsegmentator', 'ts').replace('.', '')}-atlas")
 
 # cohort -> (the organ its expert SEG marks, RADAR's finding for it)
@@ -109,12 +113,12 @@ def regions(u: str, digest: str, pid: str, coll: str, phase: str, seg_series: st
     try:
         with tempfile.TemporaryDirectory() as d:
             p = pathlib.Path(d) / f"{u}.npz"
-            if not open_blobs(ENCODER, check=False).fetch(digest, p):
+            if not open_blobs(FIELDS, check=False).fetch(digest, p):
                 raise FileNotFoundError(f"blob {digest} is gone, or did not match its name")
             field = read_field(p)
             organs, meta["labels_task"] = _organ_gates(field, u, d, twin)
             head = _head(field)
-            prepared = head.prepare(field.all_tokens())
+            prepared = head.prepare(field.all_tokens(blocks=True) if POOL == "mean" else field.all_tokens())
             voxel_ml = float(np.prod(field.grid.spacing)) * 1e-3
 
             occ = owner = None; lesions = np.zeros((0, 6))
@@ -242,7 +246,7 @@ def _idc():
 def _head(field=None):
     from feldglas.adapters import radar
     from feldglas.heads import LatticeMeanHead
-    return radar.RadarHead.load("/work/head.npz") if ENCODER == "radar" else LatticeMeanHead.for_field(field)
+    return radar.RadarHead.load("/work/head.npz") if POOL == "head" else LatticeMeanHead.for_field(field)
 
 
 @app.function(image=image, volumes={"/work": work}, cpu=8, memory=49152, timeout=7200)
@@ -253,7 +257,7 @@ def analyze(seed: int = 0) -> str:
     from feldglas.suite import normal_atlas as na
     rng = np.random.default_rng(seed)
     text = {}
-    if ENCODER == "radar":
+    if POOL == "head":
         head = radar.RadarHead.load("/work/head.npz")
         with np.load("/work/text_en.npz") as z:
             text = {k: z[k].astype(np.float64) for k in z.files}
@@ -516,7 +520,7 @@ def tails(size: int = 32) -> str:
 
 def _jobs(collection: str, limit: int):
     from feldglas.remote import Manifest
-    mf = Manifest.load(HERE.parent / "manifests" / f"{ENCODER}.json")
+    mf = Manifest.load(HERE.parent / "manifests" / f"{FIELDS}.json")
     V, I = MEDSEG / "results" / "validation", MEDSEG / "results" / "idc"
     se_of = {r["crdc_series_uuid"]: r["se"] for r in csv.DictReader(open(I / "radar_validation_series_all.csv"))}
     seg = {(r["pid"], r["ref_series"]): r["seg_series"] for r in csv.DictReader(open(I / "expert_segs.csv"))
@@ -547,7 +551,7 @@ def main(collection: str = "", limit: int = 0, force: bool = False):
     from feldglas.paths import encoder_dir
     if not _STORE.startswith(("s3://", "gs://", "az://")):
         raise SystemExit("set FELDGLAS_STORE (e.g. s3://<bucket>/feldglas): the fields are read from it")
-    if ENCODER == "radar":
+    if POOL == "head":
         cache = encoder_dir(radar.NAME)
         names = radar.english_names(MEDSEG.parents[1] / "upstream" / "damo-radar" / "RADAR_inference" / "inference_demo.py")
         table = radar.load_text_table(cache / "text_table.npz")
