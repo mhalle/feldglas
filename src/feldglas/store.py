@@ -6,12 +6,15 @@ lattices - ``lattice_<j>``, shaped ``(Z, Y, X, C)`` in C order, so one token's e
 contiguous (pooling gathers tokens) and every chunk holds the whole channel axis. Each array is
 placed in the world by duckn alone: three ``space`` axes with ``space_direction`` and ``cell``
 centering, ``space_origin`` at the center of the first token's box, and a ``list`` axis for the
-channels (a range kind: never resampled). The ``feldglas`` extension (unregistered, 0.1) carries
-what duckn does not: on each array its kernel and index, on the root the encoder, the lattice
-list and the provenance with the license the embeddings inherit - held here until duckn's own
-provenance extension, drafted but not implemented, exists. Tokens are stored as written (fp16
-from the exporters) with NO value transform: per-channel int8 needs a transform duckn does not
-define yet (``component_linear``, a convention change of its own).
+channels (a range kind: never resampled), with each axis's ``thickness`` the token's measured
+extent where the encoder knows it, and ``intent: "embedding-field"``. What duckn core does not say
+rides in the ``embedding`` extension (unregistered, 0.1, defined in docs/embedding-field.md - the
+ONE design record; change it there first): on each array the comparability key (model, weights,
+layer, stage), metric, kernel, support offset and its place in the group; on the root the file's
+version, the group's members, and the provenance - license and the input CT's identity and grid
+included - until duckn's own provenance extension, drafted but not implemented, exists. Tokens
+are stored as written (fp16 from the exporters) with NO value transform: per-channel int8 waits
+for a ``linear``-along-an-axis transform in duckn core.
 
 **No mask, and no reference to one** (the user's decision, 2026-09-22): a field is the embeddings
 placed in the world and nothing about how they will be gated. A client brings its own mask on any
@@ -41,12 +44,14 @@ import zipfile
 import numpy as np
 from rankfield.geometry import Geometry
 
-from .contract import Field, Provenance
+from .contract import Embedding, Field, Provenance
 
 FORMAT, VERSION = "feldglas-field", "0.1"
 ZARR_VERSION = "0.2"
 KNOWN_VERSIONS = {"0.1", "0.2"}
-EXTENSION, EXTENSION_VERSION = "feldglas", "0.1"
+EXTENSION, EXTENSION_VERSION = "embedding", "0.1"   # general, unregistered (duckn 456516e rule)
+SCHEMA = "feldglas docs/embedding-field.md"          # where the extension is defined
+INTENT = "embedding-field"
 DUCKN_VERSION = "1.0"                                 # geometry and a list axis: nothing past 1.0
 SPACE = "left-posterior-superior"                     # rankfield's and haversack's world
 CHUNK = 16                                            # tokens per spatial chunk edge; channels whole
@@ -85,8 +90,9 @@ def read_meta(path) -> dict:
     if is_zarr_zip(path):
         root = _open_group(path)
         ext = _root_extension(root, path)
-        return {"format": FORMAT, "version": ext["format_version"], "encoder": ext["encoder"],
-                "kernels": [list(_array_extension(root[n], path)["kernel"]) for n in ext["lattices"]],
+        arrays = [_array_extension(root[n], path) for n in ext["group"]["members"]]
+        return {"format": FORMAT, "version": ext["format_version"], "encoder": ext["provenance"]["encoder"],
+                "kernels": [list(a["kernel"]) for a in arrays], "embedding": arrays,
                 "provenance": ext["provenance"]}
     with np.load(path) as z:
         if "meta" not in z.files:
@@ -119,28 +125,53 @@ def read_field(path) -> Field:
 
 # -- 0.2: the duckn zarr zip ---------------------------------------------------------------------
 def _provenance_record(p: Provenance) -> dict:
-    return {**{k: getattr(p, k) for k in _PROVENANCE_FIELDS}, "extra": p.extra}
+    return {**{k: getattr(p, k) for k in _PROVENANCE_FIELDS}, "extra": p.extra, "input": p.input}
+
+
+def _mm(v) -> list[float]:
+    return [round(float(x), 6) for x in v]
+
+
+def _group_id(field: Field) -> str:
+    return f"{field.provenance.encoder}/{field.provenance.source}"
 
 
 def _lattice_attrs(field: Field, j: int) -> dict:
+    """One lattice array: placed by duckn core, described by the ``embedding`` extension."""
     from duckn import AxisMetadata, DucknMetadata
     from duckn.models import duckn_attrs
+    e, p = field.embedding, field.provenance
     g = field.lattice_geometry(j)
+    reach = e.lattice("receptive_mm", j)
     axes = [AxisMetadata(kind="space", centering="cell", unit="mm",
-                         space_direction=[round(float(v), 9) for v in row]) for row in g.directions]
+                         space_direction=[round(float(v), 9) for v in row],
+                         thickness=None if reach is None else round(float(reach[a]), 6))
+            for a, row in enumerate(g.directions)]
     axes.append(AxisMetadata(kind="list"))
+    ext = {"version": EXTENSION_VERSION, "schema": SCHEMA,
+           "space": {"model": p.encoder, "weights": p.weights, "layer": e.lattice("layers", j) or "",
+                     "stage": e.stage},
+           "metric": e.metric, "normalized": bool(e.normalized),
+           "kernel": [int(k) for k in field.kernels[j]],
+           "group": {"id": _group_id(field), "member": j, "members": field.lattices}}
+    if e.projects_to is not None:
+        ext["projects_to"] = e.projects_to
+    offset = e.lattice("support_offset_mm", j)
+    if offset is not None:
+        ext["support"] = {"offset": _mm(offset), "unit": "mm"}
     return duckn_attrs(DucknMetadata(
         version=DUCKN_VERSION, space=SPACE, space_origin=[round(float(v), 9) for v in g.origin], axes=axes,
-        extensions={EXTENSION: {"version": EXTENSION_VERSION, "lattice": j,
-                                "kernel": [int(k) for k in field.kernels[j]]}}))
+        intent=INTENT, extensions={EXTENSION: ext}))
 
 
 def _root_attrs(field: Field, names: list[str]) -> dict:
+    """The group: which arrays are the field's lattices, the file's version, and the provenance
+    (the input CT's identity and grid included) until duckn's provenance extension exists."""
     from duckn import DucknMetadata
     from duckn.models import duckn_attrs
-    return duckn_attrs(DucknMetadata(version=DUCKN_VERSION, extensions={EXTENSION: {
-        "version": EXTENSION_VERSION, "format": FORMAT, "format_version": ZARR_VERSION,
-        "encoder": field.provenance.encoder, "lattices": names,
+    return duckn_attrs(DucknMetadata(version=DUCKN_VERSION, intent=INTENT, extensions={EXTENSION: {
+        "version": EXTENSION_VERSION, "schema": SCHEMA, "format": FORMAT, "format_version": ZARR_VERSION,
+        "group": {"id": _group_id(field), "members": names},
         "provenance": _provenance_record(field.provenance)}}))
 
 
@@ -185,9 +216,12 @@ def _open_group(path):
 
 
 def _root_extension(root, path) -> dict:
-    ext = (root.attrs.asdict().get("duckn") or {}).get("extensions", {}).get(EXTENSION)
+    exts = (root.attrs.asdict().get("duckn") or {}).get("extensions", {})
+    ext = exts.get(EXTENSION)
     if not ext:
-        raise ValueError(f"{path}: no {EXTENSION!r} extension on the root - not a feldglas field")
+        hint = (" (a draft 0.2 written before 2026-09-22 with a 'feldglas' extension: rewrite it from its source)"
+                if "feldglas" in exts else "")
+        raise ValueError(f"{path}: no {EXTENSION!r} extension on the root - not a feldglas field{hint}")
     if ext.get("format") != FORMAT or ext.get("format_version") not in KNOWN_VERSIONS - {"0.1"}:
         raise ValueError(f"{path}: {ext.get('format')!r} {ext.get('format_version')!r}; this reader knows "
                          f"{FORMAT} {ZARR_VERSION} in a .zarr.zip")
@@ -202,6 +236,29 @@ def _array_extension(arr, path) -> dict:
     if not ext or ext.get("version") != EXTENSION_VERSION:
         raise ValueError(f"{path}: array {arr.name!r} carries no {EXTENSION} {EXTENSION_VERSION} extension")
     return ext
+
+
+def _embedding(arrays: list[dict], thickness: list, root_ext: dict, path) -> Embedding:
+    """The field's :class:`Embedding` from its arrays - which must agree on everything that is not
+    per lattice, and be the members of ONE group in the order the root lists them."""
+    gid, n = root_ext["group"]["id"], len(arrays)
+    for j, a in enumerate(arrays):
+        g = a.get("group") or {}
+        if (g.get("id"), g.get("member"), g.get("members")) != (gid, j, n):
+            raise ValueError(f"{path}: lattice {j} says it is member {g.get('member')} of {g.get('members')} "
+                             f"in {g.get('id')!r}; the root lists it as {j} of {n} in {gid!r}")
+    shared = [(a["space"]["model"], a["space"]["weights"], a["space"]["stage"], a["metric"], a["normalized"],
+               json.dumps(a.get("projects_to"), sort_keys=True)) for a in arrays]
+    if len(set(shared)) != 1:
+        raise ValueError(f"{path}: lattices of one field disagree about model, weights, stage or metric: {shared}")
+    first = arrays[0]
+    offsets = [tuple(a["support"]["offset"]) if "support" in a else None for a in arrays]
+    layers = tuple(a["space"]["layer"] for a in arrays)
+    return Embedding(layers=layers if any(layers) else (), stage=first["space"]["stage"],
+                     metric=first["metric"], normalized=bool(first["normalized"]),
+                     projects_to=first.get("projects_to"),
+                     receptive_mm=tuple(thickness) if any(t is not None for t in thickness) else (),
+                     support_offset_mm=tuple(offsets) if any(o is not None for o in offsets) else ())
 
 
 def _placement(arr, path) -> Geometry:
@@ -232,15 +289,22 @@ def _model_grid(lattice: Geometry, kernel) -> Geometry:
 def _read_zarr(path) -> Field:
     root = _open_group(path)
     ext = _root_extension(root, path)
-    tokens, kernels, placed = [], [], []
-    for name in ext["lattices"]:
+    tokens, kernels, placed, described, thickness = [], [], [], [], []
+    for name in ext["group"]["members"]:
         arr = root[name]
         a = _array_extension(arr, path)
         placed.append(_placement(arr, path)); kernels.append(tuple(int(k) for k in a["kernel"]))
+        described.append(a)
+        t = [ax.get("thickness") for ax in arr.attrs.asdict()["duckn"]["axes"][:3]]
+        thickness.append(None if all(v is None for v in t) else tuple(float(v) for v in t))
         data = arr[:]
         tokens.append(data.reshape(-1, data.shape[-1]))
     grid = _model_grid(placed[0], kernels[0])
-    field = Field(tokens=tokens, kernels=kernels, grid=grid, provenance=Provenance(**ext["provenance"]))
+    field = Field(tokens=tokens, kernels=kernels, grid=grid, provenance=Provenance(**ext["provenance"]),
+                  embedding=_embedding(described, thickness, ext, path))
+    if (field.provenance.encoder, field.provenance.weights) != (described[0]["space"]["model"],
+                                                                 described[0]["space"]["weights"]):
+        raise ValueError(f"{path}: the lattices' space names another model or weights than the provenance")
     for j, g in enumerate(placed):                    # every lattice must derive the same model grid
         want = field.lattice_geometry(j)
         if (tuple(want.shape) != tuple(g.shape)

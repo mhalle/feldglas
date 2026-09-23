@@ -51,7 +51,7 @@ from dataclasses import dataclass
 import numpy as np
 from rankfield.geometry import Geometry
 
-from ..contract import Field, Provenance
+from ..contract import Embedding, Field, Provenance
 from ..heads import LatticeMeanHead
 
 LICENSE = "Apache-2.0"                                # TotalSegmentator's open weights (haversack's attribution record)
@@ -71,6 +71,12 @@ class Variant:
     stages: tuple[int, ...]                           # encoder stages kept, shallow to deep
     kernels: tuple[tuple[int, int, int], ...]         # their strides on the model grid
     widths: tuple[int, ...]                           # their channels (min(32 * 2**stage, 320))
+
+    def embedding(self) -> Embedding:
+        """Raw encoder skips, compared by cosine once ``LatticeMeanHead`` has pooled them. Their
+        reach and look offset have not been measured (RADAR's were, by phantom): not stated."""
+        return Embedding(layers=tuple(f"encoder.stages.{s}" for s in self.stages), stage="raw",
+                         metric="cosine", normalized=False)
 
     @property
     def align(self) -> int:
@@ -328,4 +334,5 @@ def field_from_export(arrays, meta: dict) -> Field:
                  grid=Geometry(shape=tuple(g["shape"]), directions=tuple(tuple(r) for r in g["directions"]),
                                origin=tuple(g["origin"])),
                  provenance=provenance(source=meta["u"], code=meta.get("haversack", ""), v=v, **extra),
-                 native_mask=arrays.get("native_mask"), native_labels=ORGANS)
+                 native_mask=arrays.get("native_mask"), native_labels=ORGANS,
+                 embedding=v.embedding())

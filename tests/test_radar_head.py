@@ -130,3 +130,22 @@ class FromExport(unittest.TestCase):
         self.assertEqual(f.provenance.source, "series-x"); self.assertEqual(f.provenance.license, "CC-BY-NC-SA-4.0")
         self.assertEqual(f.provenance.extra["crop"]["hi"], [8, 32, 32]); self.assertTrue(f.exact_geometry)
         self.assertEqual(f.grid.origin, (1.0, 2.0, 3.0)); self.assertEqual(f.native_labels, radar.ORGANS)
+        self.assertEqual(f.embedding, radar.EMBEDDING)
+        self.assertEqual(f.embedding.layers, ("deep", "mid", "fine"))
+        self.assertEqual(f.embedding.support_offset_mm[0], radar.LOOK_OFFSET_MM["deep"])
+        self.assertNotIn("grid", f.provenance.input)                # no affine recorded: no grid claimed
+
+    def test_the_input_ct_grid_is_the_exporters_affine_in_lps(self):
+        shape = (8, 32, 32)
+        arrays = {f"tokens{j}": np.zeros((int(np.prod([s // k for s, k in zip(shape, kk)])), 256), np.float16)
+                  for j, kk in enumerate(radar.KERNELS)}
+        aff = np.array([[-0.7, 0, 0, 120.0], [0, 0.7, 0, -90.0], [0, 0, 2.5, -400.0], [0, 0, 0, 1]])  # LAS, in RAS mm
+        meta = {"u": "series-x", "grid": {"shape": list(shape), "directions": [[0, 0, 5.0], [0, -1.0, 0], [1.0, 0, 0]],
+                                          "origin": [1.0, 2.0, 3.0]},
+                "image_shape": [512, 512, 90], "image_affine_ras": aff.tolist()}
+        g = radar.field_from_export(arrays, meta).provenance.input["grid"]
+        self.assertEqual(g["shape"], [512, 512, 90])
+        ijk = np.array([10, 20, 30])
+        ras = aff[:3, :3] @ ijk + aff[:3, 3]
+        lps = np.asarray(g["origin"]) + np.asarray(g["directions"]).T @ ijk
+        np.testing.assert_allclose(lps, ras * [-1, -1, 1], atol=1e-9)

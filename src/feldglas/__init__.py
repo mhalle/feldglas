@@ -10,7 +10,7 @@ docs/radar-idc-validation/EXPLORATION.md.
 Importing this package pulls in numpy and rankfield's geometry and nothing heavier: no torch,
 no scipy, no modal (tests/test_light_import.py).
 """
-from .contract import Field, Head, Kernel, Provenance
+from .contract import Embedding, Field, Head, Kernel, Provenance
 
 __version__ = "0.0.1"
-__all__ = ["Field", "Head", "Kernel", "Provenance", "__version__"]
+__all__ = ["Embedding", "Field", "Head", "Kernel", "Provenance", "__version__"]

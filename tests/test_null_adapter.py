@@ -177,6 +177,8 @@ class OrgansAndGeometry(unittest.TestCase):
         self.assertEqual(g.provenance.license, "Apache-2.0")
         self.assertEqual(g.provenance.code, "651aff7")
         self.assertEqual(g.native_labels, radar.ORGANS)
+        self.assertEqual(g.embedding.layers, ("encoder.stages.2", "encoder.stages.3", "encoder.stages.4"))
+        self.assertEqual(g.embedding.receptive_mm, ())                 # not measured for this encoder: not stated
 
 
 class Variants(unittest.TestCase):

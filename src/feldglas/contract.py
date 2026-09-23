@@ -47,6 +47,41 @@ class Provenance:
     license: str = ""               # e.g. "CC-BY-NC-SA-4.0"
     source: str = ""                # the series' identity, e.g. an IDC crdc_series_uuid
     extra: dict = _field(default_factory=dict)
+    #: The input CT, so a client holding a mask on the CT's own grid knows it is the same image
+    #: (docs/embedding-field.md, "Provenance"; 2026-09-22). Keys, each optional: ``identity``
+    #: (content digest, DICOM UIDs, collection), ``grid`` in duckn's form (``shape``,
+    #: ``directions`` one LPS row per array axis, ``origin``), ``acquisition``, ``attribution``.
+    #: Held here until duckn's provenance extension exists; it moves there when it does.
+    input: dict = _field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Embedding:
+    """What the vectors ARE, as a client comparing them must know (docs/embedding-field.md,
+    2026-09-22). Model and weights come from :class:`Provenance`; this adds the rest of the
+    comparability key and each lattice's measured facts. Every per-lattice tuple is empty (not
+    known) or one entry per lattice; an entry may be None.
+
+    ``layers``       which encoder layer each lattice is (with model and weights: two vectors
+                     compare only if all agree).
+    ``stage``        ``raw`` tokens need a head; ``projected`` ones are in ``projects_to``'s space.
+    ``receptive_mm`` a token's measured extent along the lattice's (Z, Y, X) axes - duckn's core
+                     ``thickness``: a map read off the lattice is no sharper than this.
+    ``support_offset_mm`` where a token's evidence is centered against its sample, same axes
+                     (RADAR's look offset). ``space_origin`` stays the exact grid.
+    """
+
+    layers: tuple[str, ...] = ()
+    stage: str = "raw"
+    metric: str = "cosine"
+    normalized: bool = False
+    projects_to: dict | None = None
+    receptive_mm: tuple[tuple[float, float, float] | None, ...] = ()
+    support_offset_mm: tuple[tuple[float, float, float] | None, ...] = ()
+
+    def lattice(self, name: str, j: int):
+        v = getattr(self, name)
+        return v[j] if v else None
 
 
 @dataclass
@@ -72,6 +107,7 @@ class Field:
     native_mask: np.ndarray | None = None       # (Z, Y, X) on the model grid: the encoder's own labels
     native_labels: tuple[str, ...] = ()         # label value v is native_labels[v - 1]; 0 is background
     exact_geometry: bool = True
+    embedding: Embedding = _field(default_factory=Embedding)
 
     def __post_init__(self):
         if len(self.tokens) != len(self.kernels) or not self.tokens:
@@ -83,6 +119,10 @@ class Field:
             want = int(np.prod(self.lattice_shape(j)))
             if t.ndim != 2 or t.shape[0] != want:
                 raise ValueError(f"lattice {j}: {t.shape} tokens for a lattice of {self.lattice_shape(j)} = {want}")
+        for name in ("layers", "receptive_mm", "support_offset_mm"):
+            n = len(getattr(self.embedding, name))
+            if n not in (0, self.lattices):
+                raise ValueError(f"embedding.{name}: {n} entries for {self.lattices} lattices")
         if self.native_mask is not None and tuple(self.native_mask.shape) != tuple(self.grid.shape):
             raise ValueError(f"native mask {self.native_mask.shape} is not on the model grid {self.grid.shape}")
 

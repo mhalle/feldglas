@@ -75,8 +75,9 @@ pooled vector with no space axes.
     "space": {"model": "radar", "weights": "sha256:...", "layer": "encoder.stage5", "stage": "raw"},
     "projects_to": {"space": "radar:text-256", "head": "sha256:..."},
     "metric": "cosine", "normalized": false,
+    "kernel": [8, 32, 32],
     "support": {"offset": [6.6, 6.3, 7.6], "unit": "mm"},
-    "group": {"id": "<field id>", "member": 2, "members": 3}
+    "group": {"id": "radar/<series>", "member": 0, "members": 3}
   }
 }
 ```
@@ -89,7 +90,13 @@ pooled vector with no space axes.
 - **`support.offset`**: where a token's evidence is centered relative to its sample - RADAR's
   measured look offset (phantom, feldglas `LOOK_OFFSET_MM`), toward index 0. Extent is core
   `thickness`. Moving `space_origin` to absorb the offset would misstate the grid, which is exact.
-- **`group`**: which arrays are the layers of one field.
+- **`kernel`**: model-grid voxels per token along the lattice's axes. The model grid is derived from
+  it (decision 6); a pooled vector with no space axes omits it.
+- **`group`**: which arrays are the layers of one field. The root's `embedding` extension lists the
+  members in order (`group.members`) with `format: "feldglas-field"`, `format_version: "0.2"` and the
+  provenance; each array names the group id and its place, and the reader refuses a lattice whose
+  group, place, model, weights, stage or metric disagree.
+- Facts not known are **not stated** (no `thickness`, no `support`, no `projects_to`), never guessed.
 
 **Provenance** (duckn's provenance extension is drafted but NOT implemented; until it is, these facts
 ride in the `embedding` extension or the group's attributes, and move when it lands):
@@ -107,17 +114,23 @@ ride in the `embedding` extension or the group's attributes, and move when it la
 ## What is built, and what is not
 
 Built (feldglas main, 2026-09-22):
-- **Store 0.2** (`f4e4831`, `src/feldglas/store.py`): the group, the C-order lattice arrays placed by
-  duckn and checked by duckn's own `VolumeGeometry`, no mask, fp16, the model grid derived and
-  cross-checked. **Diverges from this record**: its extension is named `feldglas` and carries only
-  kernel, lattice index, encoder, lattice list and provenance; no `thickness`, no `intent`, no
-  `embedding` extension. Align it (writer and reader; stored 0.2 files are few and local).
+- **Store 0.2** (`f4e4831`, aligned to this record the same evening, `src/feldglas/store.py`): the
+  group, the C-order lattice arrays placed by duckn and checked by duckn's own `VolumeGeometry`, no
+  mask, fp16, the model grid derived and cross-checked; `intent`, `thickness`, the `embedding`
+  extension as above, and `provenance.input` (the input CT's identity and grid). A draft written
+  with the first day's `feldglas` extension is refused by name. In the contract: `Embedding` on
+  every `Field`, `Provenance.input`. RADAR states its layers, measured reach (20 / 40 / 80 mm,
+  EXPLORATION section 2's point spread) and look offsets, and its input grid from the exporter's
+  `image_affine_ras` (the LAS-reoriented image's grid: the CT's voxels, axes permuted and flipped);
+  the null model states its layers (`encoder.stages.N`) and nothing it has not measured.
 - Mixed-width lattices and `LatticeMeanHead` (`d5d8d09`); the atlas gates by haversack labels
   (`1e91eb2`); boxes centered correctly (`d4eaba1`).
 
 Not built:
-1. The `embedding` extension, `thickness` and `intent` in store 0.2 (above).
-2. The input CT's identity and grid in the field (today: fragments in `provenance.extra`).
+1. The null model's reach and look offset (a phantom run like RADAR's), and its input grid: its
+   exporters record `image_shape` but no affine.
+2. The input CT's content digest, DICOM UIDs and acquisition in `provenance.input` (today: the
+   series uuid only) - from haversack's `.input.json` once fields come through haversack.
 3. Exporters writing 0.2 (`radar_export_modal.py`, `radar_encode_local.py`, the null tools still
    write 0.1 `.npz`); the 1,680 fields on R2 are 0.1 and stay readable.
 4. The head as a packaged, digest-checked artifact with a fetch step (today: hand-placed files in

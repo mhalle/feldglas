@@ -1,6 +1,8 @@
 """feldglas-field 0.2: a field as a duckn zarr zip (2026-09-22). What is checked: the tokens
 round-trip in C order, duckn's OWN geometry code places every token where Field says it is, no
-mask is ever written, the model grid is derived and cross-checked, and the file is a stored zip."""
+mask is ever written, the model grid is derived and cross-checked, the file is a stored zip, and
+the metadata is docs/embedding-field.md's: ``thickness``, ``intent``, the ``embedding`` extension,
+the input CT in the provenance."""
 import json, pathlib, tempfile, unittest, zipfile
 
 import numpy as np
@@ -11,7 +13,7 @@ duckn = pytest.importorskip("duckn")
 
 from rankfield.geometry import Geometry
 
-from feldglas import Field, Provenance
+from feldglas import Embedding, Field, Provenance
 from feldglas.store import read_field, read_meta, write_field
 from conftest import KERNELS, make_field
 
@@ -29,7 +31,12 @@ def oblique_field(widths=(128, 256, 320)) -> Field:
     m = np.zeros(shape, np.uint8); m[2:10, 8:40, 8:40] = 1
     return Field(tokens=toks, kernels=KERNELS, grid=grid, native_mask=m, native_labels=("liver",),
                  provenance=Provenance(encoder="radar", code="9319f36", weights="ckpt", preprocessing="p",
-                                       license="CC-BY-NC-SA-4.0", source="series-1", extra={"crop": [1, 2]}))
+                                       license="CC-BY-NC-SA-4.0", source="series-1", extra={"crop": [1, 2]},
+                                       input={"identity": {"series": "series-1"},
+                                              "grid": {"shape": [512, 512, 90], "origin": [1.0, 2.0, 3.0],
+                                                       "directions": [[0.7, 0, 0], [0, 0.7, 0], [0, 0, 2.5]]}}),
+                 embedding=Embedding(layers=("deep", "mid", "fine"), receptive_mm=((80.0, 80.0, 80.0), None, (20.0, 21.0, 22.0)),
+                                     support_offset_mm=((6.6, 6.3, 7.6), (2.8, 2.2, 2.7), None)))
 
 
 class ZarrStore(unittest.TestCase):
@@ -83,26 +90,75 @@ class ZarrStore(unittest.TestCase):
         flat = np.ravel_multi_index((z, y, x), self.f.lattice_shape(2))
         np.testing.assert_array_equal(arr[z, y, x, :], self.f.tokens[2][flat].astype(np.float16))
 
-    def test_a_stored_zip_and_duckn_metadata_through_its_own_models(self):
+    def test_a_stored_zip_and_the_records_metadata(self):
         with zipfile.ZipFile(self.p) as z:
             self.assertTrue(all(i.compress_type == zipfile.ZIP_STORED for i in z.infolist()))
-            root = json.loads(z.read("zarr.json"))
-        ext = root["attributes"]["duckn"]["extensions"]["feldglas"]
-        self.assertEqual((ext["version"], ext["format_version"], ext["encoder"]), ("0.1", "0.2", "radar"))
-        self.assertEqual(ext["lattices"], ["lattice_0", "lattice_1", "lattice_2"])
+            root = json.loads(z.read("zarr.json"))["attributes"]["duckn"]
+            arr = json.loads(z.read("lattice_2/zarr.json"))["attributes"]["duckn"]
+        self.assertEqual(set(root["extensions"]), {"embedding"})
+        ext = root["extensions"]["embedding"]
+        self.assertEqual((ext["version"], ext["format_version"], root["intent"]), ("0.1", "0.2", "embedding-field"))
+        self.assertEqual(ext["group"], {"id": "radar/series-1", "members": ["lattice_0", "lattice_1", "lattice_2"]})
+        self.assertEqual(ext["provenance"]["input"]["grid"]["shape"], [512, 512, 90])
+        a = arr["extensions"]["embedding"]
+        self.assertEqual(arr["intent"], "embedding-field")
+        self.assertEqual(a["space"], {"model": "radar", "weights": "ckpt", "layer": "fine", "stage": "raw"})
+        self.assertEqual((a["metric"], a["normalized"], a["kernel"]), ("cosine", False, [2, 8, 8]))
+        self.assertEqual(a["group"], {"id": "radar/series-1", "member": 2, "members": 3})
+        self.assertNotIn("support", a)                           # not known for this lattice: not stated
+        self.assertNotIn("projects_to", a)
+        self.assertEqual([x.get("thickness") for x in arr["axes"]], [20.0, 21.0, 22.0, None])
 
-    def test_lattices_that_disagree_about_the_patient_are_refused(self):
+    def test_duckn_reads_thickness_on_every_space_axis(self):
+        from duckn import DucknMetadata
+        root = zarr.open_group(store=zarr.storage.ZipStore(str(self.p), mode="r"), mode="r")
+        meta = DucknMetadata(**root["lattice_0"].attrs.asdict()["duckn"])
+        self.assertEqual([a.thickness for a in meta.axes], [80.0, 80.0, 80.0, None])
+        self.assertEqual(meta.intent, "embedding-field")
+
+    def test_the_embedding_and_input_round_trip(self):
+        g = read_field(self.p)
+        self.assertEqual(g.embedding, self.f.embedding)
+        self.assertEqual(g.provenance.input, self.f.provenance.input)
+        self.assertEqual(read_meta(self.p)["embedding"][0]["support"]["offset"], [6.6, 6.3, 7.6])
+
+    def test_a_field_that_knows_nothing_more_still_round_trips(self):
+        f = make_field(mask=False)
+        g = read_field(write_field(pathlib.Path(self.d.name) / "plain.zarr.zip", f))
+        self.assertEqual(g.embedding, f.embedding)
+        self.assertEqual(g.provenance, f.provenance)
+
+    def _rewrite(self, member, edit) -> pathlib.Path:
         bad = pathlib.Path(self.d.name) / "bad.zarr.zip"
         with zipfile.ZipFile(self.p) as zin, zipfile.ZipFile(bad, "w", zipfile.ZIP_STORED) as zout:
             for info in zin.infolist():
                 data = zin.read(info)
-                if info.filename == "lattice_1/zarr.json":
-                    doc = json.loads(data)
-                    doc["attributes"]["duckn"]["space_origin"][2] += 2.5      # half a slice off
-                    data = json.dumps(doc).encode()
+                if info.filename == member:
+                    doc = json.loads(data); edit(doc["attributes"]["duckn"]); data = json.dumps(doc).encode()
                 zout.writestr(info.filename, data)
+        return bad
+
+    def test_a_lattice_from_another_group_or_place_is_refused(self):
+        def other_id(d): d["extensions"]["embedding"]["group"]["id"] = "radar/series-2"
+        def other_member(d): d["extensions"]["embedding"]["group"]["member"] = 0
+        for edit in (other_id, other_member):
+            with self.assertRaisesRegex(ValueError, "member"):
+                read_field(self._rewrite("lattice_1/zarr.json", edit))
+
+    def test_lattices_from_other_weights_are_refused(self):
+        def other(d): d["extensions"]["embedding"]["space"]["weights"] = "another-ckpt"
+        with self.assertRaisesRegex(ValueError, "disagree about model"):
+            read_field(self._rewrite("lattice_1/zarr.json", other))
+
+    def test_a_draft_with_the_old_feldglas_extension_is_refused_by_name(self):
+        def old(d): d["extensions"] = {"feldglas": d["extensions"]["embedding"]}
+        with self.assertRaisesRegex(ValueError, "draft 0.2"):
+            read_field(self._rewrite("zarr.json", old))
+
+    def test_lattices_that_disagree_about_the_patient_are_refused(self):
+        def shift(d): d["space_origin"][2] += 2.5                    # half a slice off
         with self.assertRaisesRegex(ValueError, "disagree about where the patient is"):
-            read_field(bad)
+            read_field(self._rewrite("lattice_1/zarr.json", shift))
 
     def test_a_field_without_exact_geometry_is_not_written_as_0_2(self):
         f = make_field(); f.exact_geometry = False

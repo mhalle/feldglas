@@ -28,7 +28,7 @@ import pathlib
 import numpy as np
 from rankfield.geometry import Geometry
 
-from ..contract import Field, Provenance
+from ..contract import Embedding, Field, Provenance
 
 NAME = "radar"
 LICENSE = "CC-BY-NC-SA-4.0"
@@ -52,6 +52,19 @@ ORGANS = ("adrenal gland", "aorta", "erector spinae muscle", "brain", "clavicle"
 #: (The same check put the GRID itself within 0.10 mm of where a sphere was painted, so the
 #: 1-2.5 mm by which RADAR's own mask sits superior of haversack's is the mask's, not the field's.)
 LOOK_OFFSET_MM = {"deep": (6.6, 6.3, 7.6), "mid": (2.8, 2.2, 2.7), "fine": (1.1, 1.6, 1.4)}
+#: Lattice names, in KERNELS' order: the ``layer`` of each lattice in a stored field.
+LATTICES = ("deep", "mid", "fine")
+#: How far a token's evidence reaches: the distance by which one sharp 6 mm sphere's effect on a
+#: token has fallen to nearly nothing (EXPLORATION section 2, point spread over 30 sites,
+#: 2026-09-20: "a map cannot be sharper than ~20 mm (fine), ~40 mm (mid), ~80 mm (deep)").
+#: Measured isotropically; the theoretical fields are larger (235x191x191 mm deep). Stored as
+#: duckn's ``thickness`` on each space axis.
+RECEPTIVE_MM = {"deep": (80.0, 80.0, 80.0), "mid": (40.0, 40.0, 40.0), "fine": (20.0, 20.0, 20.0)}
+#: What a RADAR field's vectors are: raw tokens, which need RADAR's head (not yet a packaged,
+#: digest-checked artifact - docs/embedding-field.md, "Not built" 4 - so no ``projects_to``).
+EMBEDDING = Embedding(layers=LATTICES, stage="raw", metric="cosine", normalized=False,
+                      receptive_mm=tuple(RECEPTIVE_MM[n] for n in LATTICES),
+                      support_offset_mm=tuple(LOOK_OFFSET_MM[n] for n in LATTICES))
 #: Which of RADAR's 36 organ QUERIES a named structure is pooled under, for TotalSegmentator's
 #: names (haversack `ts.v2:*`). By NAME and by rule, never by label value: values differ between
 #: tasks and versions. Derived from upstream's own merge table (`process_img_mask.merged_organ_id`,
@@ -187,9 +200,9 @@ def english_names(inference_demo_py) -> dict[str, str]:
     raise ValueError(f"{inference_demo_py}: no english_mapping dictionary found")
 
 
-def provenance(source: str = "", **extra) -> Provenance:
+def provenance(source: str = "", input: dict | None = None, **extra) -> Provenance:
     return Provenance(encoder=NAME, code=CODE, weights=WEIGHTS, preprocessing="radar-prep 0.1 (upstream's, on the GPU)",
-                      license=LICENSE, source=source, extra=extra)
+                      license=LICENSE, source=source, extra=extra, input=input or {})
 
 
 def field_from_export(arrays, meta: dict) -> Field:
@@ -204,8 +217,24 @@ def field_from_export(arrays, meta: dict) -> Field:
     return Field(tokens=[arrays[f"tokens{j}"] for j in range(len(KERNELS))], kernels=KERNELS,
                  grid=Geometry(shape=tuple(g["shape"]), directions=tuple(tuple(row) for row in g["directions"]),
                                origin=tuple(g["origin"])),
-                 provenance=provenance(source=meta["u"], **extra),
-                 native_mask=arrays.get("native_mask"), native_labels=ORGANS)   # None: an encoder-only encode (fp16 on MPS)
+                 provenance=provenance(source=meta["u"], input=input_record(meta), **extra),
+                 native_mask=arrays.get("native_mask"), native_labels=ORGANS,   # None: an encoder-only encode (fp16 on MPS)
+                 embedding=EMBEDDING)
+
+
+def input_record(meta: dict) -> dict:
+    """The input CT as the field records it: its identity, and its grid in duckn's form (LPS,
+    one direction row per array axis) from the exporter's ``image_affine_ras`` - the grid of the
+    image RADAR read, i.e. reoriented to LAS: the CT's own voxels, its axes permuted and flipped.
+    Empty when the exporter recorded no affine."""
+    out = {"identity": {"series": meta["u"]}} if meta.get("u") else {}
+    if "image_affine_ras" in meta and "image_shape" in meta:
+        a = np.asarray(meta["image_affine_ras"], float)
+        lps = np.array([-1.0, -1.0, 1.0])
+        out["grid"] = {"shape": [int(v) for v in meta["image_shape"]],
+                       "directions": [(a[:3, i] * lps).round(9).tolist() for i in range(3)],
+                       "origin": (a[:3, 3] * lps).round(9).tolist(), "space": "left-posterior-superior"}
+    return out
 
 
 def read_pilot_field(path) -> Field:
