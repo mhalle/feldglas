@@ -21,11 +21,16 @@ modal = ["modal>=1.0"]           # tools/radar_export_modal.py - the one GPU ste
 # once, verified on fetch - and feldglas.remote owns only the manifest that names them. An
 # extra, because a viewer pooling gates from local fields needs no store client at all.
 remote = ["provender>=0.1.1"]
-test = ["pytest>=8", "scipy>=1.11", "scikit-learn>=1.4", "provender>=0.1.1"]
+# the field as a duckn zarr zip (store 0.2): zarr writes and reads it, duckn's own models write its
+# attributes (never hand-written dicts). Imported inside functions only - a viewer reading npz
+# fields needs neither.
+store = ["zarr>=3.3", "duckn"]
+test = ["pytest>=8", "scipy>=1.11", "scikit-learn>=1.4", "provender>=0.1.1", "zarr>=3.3", "duckn"]
 
 [tool.uv.sources]
 rankfield = { git = "https://github.com/mhalle/rankfield.git", tag = "v0.3.2" }
 provender = { git = "https://github.com/mhalle/provender.git", tag = "v0.1.1" }
+duckn = { git = "https://github.com/mhalle/duckn.git", tag = "v0.5.1" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/feldglas"]
