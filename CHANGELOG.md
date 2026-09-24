@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3] - 2026-09-23
+
+- **rankfield is pinned at v0.3.6, as haversack pins it**, for the reason 0.1.1 gave. rankfield
+  0.3.6 adds a Metal kernel for its encoder's selection and a one-sort path when every class
+  is kept, both byte-identical to its torch path; feldglas uses only its `Geometry`, which is
+  unchanged, so nothing feldglas computes changes.
+
 ## [0.1.2] - 2026-09-23
 
 - **rankfield is pinned at v0.3.5, as haversack pins it**, for the reason 0.1.1 gave: uv
