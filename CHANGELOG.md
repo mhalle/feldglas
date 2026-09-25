@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.4] - 2026-09-25
+
+- **duckn is pinned at v0.5.2, as haversack pins it**, for the reason 0.1.1 gave: uv honors a git
+  dependency's own sources, so unequal pins make `haversack[embed]` unresolvable. duckn 0.5.2 adds
+  `duckn.dicom_tags` (SimpleITK's DICOM tags in its dicom extension's encoding) and moves
+  per-slice DICOM tags to `samples[i].metadata.dicom` in its spec; the store models feldglas
+  writes through are unchanged.
+
 ## [0.1.3] - 2026-09-23
 
 - **rankfield is pinned at v0.3.6, as haversack pins it**, for the reason 0.1.1 gave. rankfield
