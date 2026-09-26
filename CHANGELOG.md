@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.6] - 2026-09-26
+
+- **duckn is pinned at v0.5.3, as haversack pins it** (uv honors a git dependency's own sources,
+  so unequal pins make `haversack[embed]` unresolvable). duckn 0.5.3 settles its dicom-spec and
+  makes one DICOM tag conversion for both of its converters; the store models feldglas writes
+  through gain only an optional `stored_values` field on the dicom extension, and no field byte
+  changes.
+
 ## [0.1.5] - 2026-09-25
 
 - **rankfield is pinned at v0.3.7, as haversack pins it** (uv honors a git dependency's own
