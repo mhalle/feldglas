@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.5] - 2026-09-25
+
+- **rankfield is pinned at v0.3.7, as haversack pins it** (uv honors a git dependency's own
+  sources, so unequal pins make `haversack[embed]` unresolvable). rankfield 0.3.7 adds restores
+  onto a world geometry; nothing here uses it, and no field byte changes.
+
 ## [0.1.4] - 2026-09-25
 
 - **duckn is pinned at v0.5.2, as haversack pins it**, for the reason 0.1.1 gave: uv honors a git

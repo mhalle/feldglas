@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "feldglas"
-version = "0.1.4"
+version = "0.1.5"
 description = "feldglas: an instrument for looking at the embedding fields of medical images - the encoder contract, gates, pooling heads, a model of the unremarkable, and the suite that characterizes an encoder"
 license = "Apache-2.0"
 requires-python = ">=3.12"
@@ -35,7 +35,7 @@ test = ["pytest>=8", "scipy>=1.11", "scikit-learn>=1.4", "provender>=0.1.1", "za
 feldglas = "feldglas.cli:main"
 
 [tool.uv.sources]
-rankfield = { git = "https://github.com/mhalle/rankfield.git", tag = "v0.3.6" }
+rankfield = { git = "https://github.com/mhalle/rankfield.git", tag = "v0.3.7" }
 provender = { git = "https://github.com/mhalle/provender.git", tag = "v0.1.1" }
 duckn = { git = "https://github.com/mhalle/duckn.git", tag = "v0.5.2" }
 
