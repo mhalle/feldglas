@@ -35,7 +35,8 @@ test = ["pytest>=8", "scipy>=1.11", "scikit-learn>=1.4", "provender>=0.1.1", "za
 feldglas = "feldglas.cli:main"
 
 [tool.uv.sources]
-rankfield = { git = "https://github.com/mhalle/rankfield.git", tag = "v0.3.9" }
+# dev tracks rankfield's dev branch, as haversack's dev does (main pins a tag)
+rankfield = { git = "https://github.com/mhalle/rankfield.git", branch = "dev" }
 provender = { git = "https://github.com/mhalle/provender.git", tag = "v0.1.1" }
 duckn = { git = "https://github.com/mhalle/duckn.git", tag = "v0.6.2" }
 
