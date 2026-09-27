@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1] - 2026-09-27
+
+- **duckn is pinned at v0.6.1, as haversack pins it.** duckn 0.6.1 fixes four of its 1.x
+  converters (DICOM, NIfTI, NRRD import/export), none of which feldglas calls; the pin moves
+  only because uv honors a git dependency's own sources, so feldglas's and haversack's duckn
+  tags must be equal for `haversack[embed]` to resolve.
+
 ## [0.2.0] - 2026-09-27
 
 - **duckn is pinned at v0.6.0 (convention 1.2), as haversack pins it**, and the `store` and `test`
