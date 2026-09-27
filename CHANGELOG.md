@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.3] - 2026-09-27
+
+- **rankfield is pinned at v0.3.8, as haversack will pin it.** rankfield 0.3.8 takes its geometry
+  (Grid, Mapping, Affine, the per-axis tables) from labelfield and tightens one nearest edge rule;
+  feldglas uses only rankfield's Geometry, which is unchanged. The pin moves so the two stay equal.
+
 ## [0.2.2] - 2026-09-27
 
 - **duckn is pinned at v0.6.2, as haversack pins it** (duckn adds dicom-spec's groups by name,
