@@ -45,7 +45,8 @@ def read_field(path):
         d = arr.attrs.asdict()["duckn"]
         v = arr[:]
         for t in d.get("value_transforms") or []:
-            if t["name"] != "embedding.linear_along_axis":
+            # duckn 1.2's axis_linear; the namespaced name is what files before it carry
+            if t["name"] not in ("axis_linear", "embedding.linear_along_axis"):
                 raise SystemExit(f"{name}: unknown value transform {t['name']!r} - its values are undefined")
             v = v.astype(np.float32) * np.asarray(t["parameters"]["slope"], np.float32) \
                 + np.asarray(t["parameters"]["intercept"], np.float32)

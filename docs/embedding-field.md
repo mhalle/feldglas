@@ -54,6 +54,8 @@ Analogy with the family's class field:
    integers - where scales kept only in an extension would let a plain duckn reader take int8 for
    the values. feldglas refuses any transform it does not know. Measured on a RADAR field against
    its fp16 tokens: token cosine >= 0.9998, pooled organ cosine (shared mean removed) >= 0.99992,
+   (2026-09-26: duckn convention 1.2 defines this transform as `axis_linear`, same parameters;
+   written under that name since, the namespaced name still read.)
    33.8 -> 15.7 MB (zstd). One scale per lattice - duckn's standard scalar `linear`, no invention -
    was ten times worse (token cosine >= 0.9968, 12.9 MB); fp16 against fp32 is itself ~0.9997. If
    duckn core adds a linear along an axis, rename to it. Float (fp16) stays the default.

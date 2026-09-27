@@ -115,11 +115,12 @@ grid: it is whatever the encoder resampled the CT onto (RADAR: about 5 x 1 x 1 m
 ## Stored values: float, or int8 with a transform
 
 A lattice is stored either as floats (the tokens as they are) or as **int8**. An int8 lattice's
-`duckn.value_transforms` holds one entry,
-`{"name": "embedding.linear_along_axis", "parameters": {"axis": 3, "slope": [...], "intercept": [...]}}`
-- `axis` 3 is the channel axis, and `slope` and `intercept` have one entry per channel. A float
-lattice has no `value_transforms` at all. Integer values with no transform are not tokens: refuse
-them. Decode each value in 32-bit float:
+`duckn.value_transforms` holds one entry, duckn's `axis_linear` (convention 1.2),
+`{"name": "axis_linear", "parameters": {"axis": 3, "slope": [...], "intercept": [...]}}`
+- `axis` 3 is the channel axis, and `slope` and `intercept` have one entry per channel. Files
+written before 2026-09-26 name the same transform `embedding.linear_along_axis`; read it the same
+way. A float lattice states `"value_transforms": []` - its values are the tokens (older files
+omit the field, meaning the same). Integer values with no transform are not tokens: refuse them. Decode each value in 32-bit float:
 
     token[..., c] = stored[..., c] * slope[c] + intercept[c]        (c: the channel index)
 

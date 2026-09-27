@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Fields follow duckn convention 1.2 (field format 0.3).** An int8 lattice's transform is
+  duckn's own `axis_linear` - the same `axis`, `slope` and `intercept` - so a plain duckn reader
+  now calibrates int8 tokens itself instead of refusing an unknown transform; a float lattice
+  states `value_transforms: []` (1.2 reads an absent one as "not stated"); the root's duckn
+  object is a convention-1.2 group (`DucknGroupMetadata`). Files 0.2 and older still read,
+  including the namespaced `embedding.linear_along_axis`; a 0.2 reader refuses a 0.3 file by
+  its version. Needs duckn with convention 1.2.
+
 ## [0.1.7] - 2026-09-26
 
 - **duckn is pinned at v0.5.4, as haversack pins it** (uv honors a git dependency's own sources,

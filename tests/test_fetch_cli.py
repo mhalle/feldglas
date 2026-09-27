@@ -187,7 +187,7 @@ class Command(Base):
         self.assertTrue(d["ok"]); self.assertEqual(d["problems"], [])
         self.assertEqual(d["server"]["health"]["version"], "0.12.9")
         self.assertIn("score", d["commands"]); self.assertEqual(set(d["exit_codes"]), {"0", "1", "2"})
-        self.assertEqual(d["reads"]["field"]["versions"], ["0.2"])
+        self.assertEqual(d["reads"]["field"]["versions"], ["0.2", "0.3"])
         r = CliRunner().invoke(main, ["--token", "s3cret", "health", "--json", "--haversack", "http://127.0.0.1:9"])
         self.assertEqual(r.exit_code, 1)
         d = json.loads(r.output)

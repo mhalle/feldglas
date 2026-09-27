@@ -33,8 +33,10 @@ import numpy as np
 
 from .labels import LabelMap, read_seg_nrrd
 
-FORMAT, FORMAT_VERSIONS, EXTENSION, EXTENSION_VERSION = "feldglas-field", {"0.2"}, "embedding", "0.1"
-AXIS_LINEAR = "embedding.linear_along_axis"
+FORMAT, FORMAT_VERSIONS, EXTENSION, EXTENSION_VERSION = "feldglas-field", {"0.2", "0.3"}, "embedding", "0.1"
+AXIS_LINEAR = "axis_linear"
+#: duckn 1.2's name, and the namespaced one files written before 2026-09-26 carry
+AXIS_LINEAR_NAMES = (AXIS_LINEAR, "embedding.linear_along_axis")
 PLACEMENT_TOLERANCE_MM = 1e-3
 
 __all__ = ["open_field", "FieldView", "Lattice", "Mask", "structure_mask", "seg_mask", "read_seg_nrrd", "labels_at",
@@ -150,7 +152,7 @@ def _decode(values: np.ndarray, transforms, where: str) -> np.ndarray:
             raise ValueError(f"{where}: {values.dtype} values with no value transform - integers are not tokens")
         out = np.asarray(values, np.float32)
     else:
-        if len(transforms) != 1 or transforms[0].get("name") != AXIS_LINEAR:
+        if len(transforms) != 1 or transforms[0].get("name") not in AXIS_LINEAR_NAMES:
             raise ValueError(f"{where}: stored through {[t.get('name') for t in transforms]}; only {AXIS_LINEAR!r} is "
                              "decoded here - these values are not tokens")
         p = transforms[0].get("parameters") or {}
@@ -607,7 +609,8 @@ class Reference:
             for name, a in arrays:
                 arr = root.create_array(name, shape=a.shape, dtype=a.dtype, compressors=zarr.codecs.ZstdCodec(level=3))
                 arr[:] = a
-            root.attrs.update({"duckn": {"version": "1.0", "intent": "embedding-reference", "extensions": {EXTENSION: {
+            # a group's duckn object is convention 1.2 (duckn-spec §3.3); its arrays are plain Zarr
+            root.attrs.update({"duckn": {"version": "1.2", "intent": "embedding-reference", "extensions": {EXTENSION: {
                 "version": EXTENSION_VERSION, "format": self.FORMAT, "format_version": self.FORMAT_VERSION,
                 "key": dict(zip(("model", "weights", "layer", "stage"), self.key)), "threshold": self.threshold,
                 "k": self.k, "min_occupancy": self.min_occupancy, "drop_boundary": self.drop_boundary,

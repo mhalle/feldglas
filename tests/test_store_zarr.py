@@ -98,7 +98,7 @@ class ZarrStore(unittest.TestCase):
             arr = json.loads(z.read("lattice_2/zarr.json"))["attributes"]["duckn"]
         self.assertEqual(set(root["extensions"]), {"embedding"})
         ext = root["extensions"]["embedding"]
-        self.assertEqual((ext["version"], ext["format_version"], root["intent"]), ("0.1", "0.2", "embedding-field"))
+        self.assertEqual((ext["version"], ext["format_version"], root["intent"]), ("0.1", "0.3", "embedding-field"))
         self.assertEqual(ext["group"], {"id": "radar/series-1", "members": ["lattice_0", "lattice_1", "lattice_2"]})
         self.assertEqual(ext["provenance"]["input"]["grid"]["shape"], [512, 512, 90])
         a = arr["extensions"]["embedding"]
@@ -205,7 +205,8 @@ class ZarrStore(unittest.TestCase):
 
 
 class Int8(unittest.TestCase):
-    """int8 through the ``embedding.linear_along_axis`` value transform (2026-09-22)."""
+    """int8 through duckn 1.2's ``axis_linear`` value transform (2026-09-26; before, the
+    namespaced ``embedding.linear_along_axis``, which is still read)."""
 
     def setUp(self):
         self.d = tempfile.TemporaryDirectory(); self.addCleanup(self.d.cleanup)
@@ -235,12 +236,29 @@ class Int8(unittest.TestCase):
         meta = DucknMetadata(**arr.attrs.asdict()["duckn"])
         validate_against_shape(meta, arr.shape)
         (t,) = meta.value_transforms
-        self.assertEqual((t.name, t.parameters["axis"], len(t.parameters["slope"])), ("embedding.linear_along_axis", 3, 320))
+        self.assertEqual((t.name, t.parameters["axis"], len(t.parameters["slope"])), ("axis_linear", 3, 320))
 
-    def test_a_float_field_states_no_transform(self):
+    def test_a_plain_duckn_reader_calibrates_the_tokens_as_feldglas_does(self):
+        """The point of axis_linear being duckn's (convention 1.2): duckn's own calibrated read of
+        an int8 lattice gives the tokens feldglas decodes - it refused before, as an unknown
+        transform. A partial read selects the channels' own scales."""
+        from duckn.zarr_io import DucknArray
+        g = read_field(self.p)
+        root = zarr.open_group(store=zarr.storage.ZipStore(str(self.p), mode="r"), mode="r")
+        for j in range(len(g.tokens)):
+            arr = DucknArray(root[f"lattice_{j}"])
+            whole = np.asarray(arr[...], np.float32).reshape(-1, arr.shape[-1])
+            np.testing.assert_allclose(whole, g.tokens[j], rtol=0, atol=1e-5)
+            part = np.asarray(arr[..., 5:9], np.float32).reshape(-1, 4)
+            np.testing.assert_allclose(part, g.tokens[j][:, 5:9], rtol=0, atol=1e-5)
+
+    def test_a_float_field_states_its_values_are_the_tokens(self):
+        """duckn 1.2: an absent value_transforms means "not stated"; a float field's values ARE
+        its tokens, which `[]` states (and a 1.0 file may declare, with the same meaning)."""
         q = write_field(pathlib.Path(self.d.name) / "f.zarr.zip", self.f)
         with zipfile.ZipFile(q) as z:
-            self.assertNotIn("value_transforms", z.read("lattice_0/zarr.json").decode())
+            d = json.loads(z.read("lattice_0/zarr.json"))["attributes"]["duckn"]
+        self.assertEqual(d["value_transforms"], [])
 
     def _edit(self, edit) -> pathlib.Path:
         bad = pathlib.Path(self.d.name) / "bad.zarr.zip"

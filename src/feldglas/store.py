@@ -47,8 +47,12 @@ from rankfield.geometry import Geometry
 from .contract import Embedding, Field, Provenance
 
 FORMAT, VERSION = "feldglas-field", "0.1"
-ZARR_VERSION = "0.2"
-KNOWN_VERSIONS = {"0.1", "0.2"}
+ZARR_VERSION = "0.3"
+#: 0.3 (2026-09-26): int8 lattices through duckn 1.2's ``axis_linear`` (0.2 named it
+#: ``embedding.linear_along_axis``), float lattices stating ``value_transforms: []``, and the
+#: root's duckn object as a convention-1.2 group. A 0.2 reader refuses a 0.3 file by its version
+#: rather than meeting a transform name it does not know; this reader reads both.
+KNOWN_VERSIONS = {"0.1", "0.2", "0.3"}
 EXTENSION, EXTENSION_VERSION = "embedding", "0.1"   # general, unregistered (duckn 456516e rule)
 SCHEMA = "README.md (in this file)"                   # the design record is feldglas docs/embedding-field.md
 README = pathlib.Path(__file__).with_name("field_readme.md")   # packed into every field as README.md
@@ -62,7 +66,11 @@ INTENT = "embedding-field"
 #: collide with it. Measured on a RADAR field against its fp16 tokens: token cosine >= 0.9998,
 #: pooled organ cosine >= 0.99992, 33.8 -> 15.7 MB; one scale per lattice (duckn's standard
 #: ``linear``) was ten times worse (token cosine >= 0.9968).
-AXIS_LINEAR = "embedding.linear_along_axis"
+AXIS_LINEAR = "axis_linear"
+#: 2026-09-26: duckn convention 1.2 defines exactly this transform - ``axis_linear``, the same
+#: ``axis``/``slope``/``intercept`` - so a duckn reader now calibrates int8 tokens itself. Files
+#: written before carry the namespaced name, which this reader still decodes.
+AXIS_LINEAR_NAMES = (AXIS_LINEAR, "embedding.linear_along_axis")
 
 
 def _quantize(t: np.ndarray):
@@ -84,7 +92,7 @@ def _decode(q: np.ndarray, transforms, path, name) -> np.ndarray:
         if not np.issubdtype(q.dtype, np.floating):     # an integer with no transform is not a token
             raise ValueError(f"{path}: {name!r} holds {q.dtype} values with no value transform - they are not tokens")
         return q
-    if len(transforms) != 1 or transforms[0].get("name") != AXIS_LINEAR:
+    if len(transforms) != 1 or transforms[0].get("name") not in AXIS_LINEAR_NAMES:
         raise ValueError(f"{path}: {name!r} is stored through {[t.get('name') for t in transforms]}; this reader "
                          f"decodes only {AXIS_LINEAR!r} - its tokens' values are undefined here")
     par = transforms[0]["parameters"]
@@ -95,6 +103,8 @@ def _decode(q: np.ndarray, transforms, path, name) -> np.ndarray:
         raise ValueError(f"{path}: {name!r}'s {AXIS_LINEAR} has a slope or intercept that is not finite")
     return q.astype(np.float32) * slope + intercept
 DUCKN_VERSION = "1.0"                                 # geometry and a list axis: nothing past 1.0
+#: an int8 lattice (``axis_linear``) and the group's metadata are convention 1.2
+DUCKN_VERSION_INT8 = DUCKN_GROUP_VERSION = "1.2"
 SPACE = "left-posterior-superior"                     # rankfield's and haversack's world
 CHUNK = 16                                            # tokens per spatial chunk edge; channels whole
 _PROVENANCE_FIELDS = ("encoder", "code", "weights", "preprocessing", "license", "source")
@@ -215,22 +225,26 @@ def _lattice_attrs(field: Field, j: int, transform: dict | None = None) -> dict:
     offset = e.lattice("support_offset_mm", j)
     if offset is not None:
         ext["support"] = {"offset": _mm(offset), "unit": "mm"}
+    # the tokens' mapping is always stated: axis_linear for int8, [] (the values ARE the tokens)
+    # for float - duckn 1.2 reads an absent value_transforms as "not stated"
     return duckn_attrs(DucknMetadata(
-        version=DUCKN_VERSION, space=SPACE, space_origin=[round(float(v), 9) for v in g.origin], axes=axes,
-        intent=INTENT, value_transforms=[transform] if transform else None, extensions={EXTENSION: ext}))
+        version=DUCKN_VERSION_INT8 if transform else DUCKN_VERSION, space=SPACE,
+        space_origin=[round(float(v), 9) for v in g.origin], axes=axes,
+        intent=INTENT, value_transforms=[transform] if transform else [], extensions={EXTENSION: ext}))
 
 
 def _root_attrs(field: Field, names: list[str]) -> dict:
     """The group: which arrays are the field's lattices, the file's version, and the provenance
     (the input CT's identity and grid included) until duckn's provenance extension exists."""
-    from duckn import DucknMetadata
-    from duckn.models import duckn_attrs
-    return duckn_attrs(DucknMetadata(version=DUCKN_VERSION, intent=INTENT, extensions={EXTENSION: {
+    # a GROUP's duckn object (convention 1.2, §3.3): version, intent, extensions only
+    from duckn import DucknGroupMetadata
+    meta = DucknGroupMetadata(version=DUCKN_GROUP_VERSION, intent=INTENT, extensions={EXTENSION: {
         "version": EXTENSION_VERSION, "schema": SCHEMA, "format": FORMAT, "format_version": ZARR_VERSION,
         "group": {"id": _group_id(field), "members": names},
         **({"data_box": {"lo": list(field.data_box[0]), "hi": list(field.data_box[1])}}
            if field.data_box is not None else {}),
-        "provenance": _provenance_record(field.provenance)}}))
+        "provenance": _provenance_record(field.provenance)}})
+    return {"duckn": meta.model_dump(exclude_none=True)}
 
 
 def _write_zarr(path: pathlib.Path, field: Field, token_dtype) -> pathlib.Path:
