@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.7] - 2026-09-26
+
+- **duckn is pinned at v0.5.4, as haversack pins it** (uv honors a git dependency's own sources,
+  so unequal pins make `haversack[embed]` unresolvable). duckn 0.5.4 fixes its DICOM tag
+  conversion and adds the writers' obligations to its spec; the store models feldglas writes
+  through are unchanged, and no field byte changes.
+
 ## [0.1.6] - 2026-09-26
 
 - **duckn is pinned at v0.5.3, as haversack pins it** (uv honors a git dependency's own sources,
