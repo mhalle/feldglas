@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.2] - 2026-09-27
+
+- **duckn is pinned at v0.6.2, as haversack pins it** (duckn adds dicom-spec's groups by name,
+  which feldglas does not use; the pin moves so the two stay equal).
+
 ## [0.2.1] - 2026-09-27
 
 - **duckn is pinned at v0.6.1, as haversack pins it.** duckn 0.6.1 fixes four of its 1.x
