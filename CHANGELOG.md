@@ -1,7 +1,10 @@
 # Changelog
 
-## Unreleased
+## [0.2.0] - 2026-09-27
 
+- **duckn is pinned at v0.6.0 (convention 1.2), as haversack pins it**, and the `store` and `test`
+  extras require `duckn>=0.6`: field format 0.3 writes duckn's `axis_linear` and a 1.2 group,
+  which older duckn cannot read.
 - **Fields follow duckn convention 1.2 (field format 0.3).** An int8 lattice's transform is
   duckn's own `axis_linear` - the same `axis`, `slope` and `intercept` - so a plain duckn reader
   now calibrates int8 tokens itself instead of refusing an unknown transform; a float lattice

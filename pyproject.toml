@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "feldglas"
-version = "0.1.7"
+version = "0.2.0"
 description = "feldglas: an instrument for looking at the embedding fields of medical images - the encoder contract, gates, pooling heads, a model of the unremarkable, and the suite that characterizes an encoder"
 license = "Apache-2.0"
 requires-python = ">=3.12"
@@ -24,12 +24,12 @@ remote = ["provender>=0.1.1"]
 # the field as a duckn zarr zip (store 0.2): zarr writes and reads it, duckn's own models write its
 # attributes (never hand-written dicts). Imported inside functions only - a viewer reading npz
 # fields needs neither.
-store = ["zarr>=3.3", "duckn"]
+store = ["zarr>=3.3", "duckn>=0.6"]
 # the receiving end (feldglas.client, the `feldglas` command): zarr reads a field, obstore fetches
 # fields and .seg.nrrd files by http(s) URL (a haversack server's path surface, a local `haversack
 # serve`), click is the command line, scipy erodes a region
 client = ["zarr>=3.3", "obstore>=0.11", "click>=8.1", "scipy>=1.11"]
-test = ["pytest>=8", "scipy>=1.11", "scikit-learn>=1.4", "provender>=0.1.1", "zarr>=3.3", "duckn", "obstore>=0.11", "click>=8.1"]
+test = ["pytest>=8", "scipy>=1.11", "scikit-learn>=1.4", "provender>=0.1.1", "zarr>=3.3", "duckn>=0.6", "obstore>=0.11", "click>=8.1"]
 
 [project.scripts]
 feldglas = "feldglas.cli:main"
@@ -37,7 +37,7 @@ feldglas = "feldglas.cli:main"
 [tool.uv.sources]
 rankfield = { git = "https://github.com/mhalle/rankfield.git", tag = "v0.3.7" }
 provender = { git = "https://github.com/mhalle/provender.git", tag = "v0.1.1" }
-duckn = { git = "https://github.com/mhalle/duckn.git", tag = "v0.5.4" }
+duckn = { git = "https://github.com/mhalle/duckn.git", tag = "v0.6.0" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/feldglas"]
