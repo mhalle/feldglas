@@ -35,7 +35,8 @@ test = ["pytest>=8", "scipy>=1.11", "scikit-learn>=1.4", "provender>=0.1.1", "za
 feldglas = "feldglas.cli:main"
 
 [tool.uv.sources]
-rankfield = { git = "https://github.com/mhalle/rankfield.git", tag = "v0.3.8" }
+# unpinned for now (2026-09-27): tracks rankfield's main, as haversack does, so the two stay equal
+rankfield = { git = "https://github.com/mhalle/rankfield.git" }
 provender = { git = "https://github.com/mhalle/provender.git", tag = "v0.1.1" }
 duckn = { git = "https://github.com/mhalle/duckn.git", tag = "v0.6.2" }
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+- **rankfield is unpinned** (it tracks rankfield's `main`, as haversack does), so the two stay equal
+  without a feldglas release each time rankfield moves.
+
 ## [0.2.3] - 2026-09-27
 
 - **rankfield is pinned at v0.3.8, as haversack will pin it.** rankfield 0.3.8 takes its geometry
