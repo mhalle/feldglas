@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.5] - 2026-09-28
+
+- **rankfield is pinned at v0.3.10, as haversack pins it** (labelfield v0.1.3 underneath; feldglas
+  uses only rankfield's Geometry, which is unchanged).
+
 ## [0.2.4] - 2026-09-27
 
 - **rankfield is pinned at v0.3.9, as haversack pins it** (labelfield v0.1.2 underneath; feldglas
