@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.6] - 2026-09-30
+
+- **duckn is pinned at v0.6.3, as haversack pins it.** 0.6.3 changes two 1.x converters (a NRRD
+  import with a measurement frame declares 1.1; a DICOM rescale that varies by slice is an
+  `axis_linear` in a 1.2 file); feldglas writes fields through duckn's models, which are
+  unchanged.
+
 ## [0.2.5] - 2026-09-28
 
 - **rankfield is pinned at v0.3.10, as haversack pins it** (labelfield v0.1.3 underneath; feldglas
